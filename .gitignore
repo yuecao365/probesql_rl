@@ -1,28 +1,28 @@
+# Symlinks to the data disk (git sees symlinks as files, so no trailing slash)
+data
+models
+ckpt
+*.sqlite
+*.db
+*.zip
+
 # Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
-venv/
 .env
 
-# Data & checkpoints (large, not for git)
-data/
-checkpoints/
-outputs/
-*.sqlite
-*.db
-
-# Logs
+# Run outputs
 wandb/
+outputs/
+logs/
 *.log
 
-# OS / editor
-.DS_Store
-Thumbs.db
+# Editor / OS
 .idea/
 .vscode/
+.DS_Store
 
-# 个人计划文档（含预算/排期/简历草稿，不公开）
-# 如果你想公开它们，删掉下面两行即可
-text2sql-agentic-rl-项目计划.md
-精简版-4周计划.md
+# Private planning docs (budget, schedule); not published
+*计划.md
