@@ -2,13 +2,14 @@
 
 The schema is hidden from the prompt, so the tools are the only way to learn
 it: list tables, describe one, look at real rows, search column names, run a
-query, submit. Every tool returns a string and never raises; failures become
-observations the model must read and react to, which is the behavior being
-trained. Observation formatting lives here and nowhere else, since the exact
-text is part of what SFT data and RL rollouts must share.
+query, submit. Every probing tool returns a string and never raises; failures
+become observations the model must read and react to, which is the behavior
+being trained. Observation formatting lives here and nowhere else, since the
+exact text is part of what SFT data and RL rollouts must share.
 
-`submit` is declared here so the model sees it, but the rollout loop intercepts
-it: its result feeds the reward, not the next turn.
+`run_sql` and `submit` are declared here but executed by the rollout loop via
+`execute()`, because their full result feeds the reward while the model only
+sees the first MAX_ROWS rows.
 """
 
 from __future__ import annotations
@@ -17,10 +18,13 @@ import sqlite3
 
 from env import db, verifier
 
-MAX_ROWS = 20
+MAX_ROWS = 20  # rows shown to the model
+RESULT_ROWS = 10_000  # rows kept for reward computation
 MAX_SAMPLE_ROWS = 5
 MAX_CELL_CHARS = 64
 TIMEOUT_S = 5.0
+
+PROBES = ("list_tables", "describe_table", "sample_rows", "search_column")
 
 SPECS = [
     {"name": "list_tables", "description": "List all tables in the database.", "parameters": {"type": "object", "properties": {}, "required": []}},
@@ -45,13 +49,14 @@ def _cell(v) -> str:
     return s if len(s) <= MAX_CELL_CHARS else s[: MAX_CELL_CHARS - 1] + "…"
 
 
-def render(result: db.Result) -> str:
+def render(result: db.Result, max_rows: int = MAX_ROWS) -> str:
     if not result.rows:
         return "(empty result)"
+    shown = result.rows[:max_rows]
     lines = [" | ".join(result.columns)]
-    lines += [" | ".join(_cell(c) for c in row) for row in result.rows]
-    if result.truncated:
-        lines.append(f"... (showing first {len(result.rows)} rows, more exist)")
+    lines += [" | ".join(_cell(c) for c in row) for row in shown]
+    if result.truncated or len(result.rows) > max_rows:
+        lines.append(f"... (showing first {len(shown)} rows, more exist)")
     return "\n".join(lines)
 
 
@@ -60,23 +65,29 @@ class Toolbox:
         self.conn = conn
 
     def call(self, name: str, args: dict) -> str:
-        handler = getattr(self, name, None)
-        if name.startswith("_") or name in ("call", "submit") or handler is None:
+        """Dispatch a probing tool; run_sql and submit are the rollout's job."""
+        if name not in PROBES:
             return f"Error: unknown tool '{name}'"
         try:
-            return handler(**args)
+            return getattr(self, name)(**args)
         except TypeError as e:
             return f"Error: bad arguments for {name}: {e}"
 
-    def _tables(self) -> list[str]:
+    def execute(self, query: str) -> db.Result:
+        """Full result of a policy-written SELECT. Raises db.DbError."""
+        if not verifier.is_read_query(query):
+            raise db.DbError("only SELECT queries are allowed")
+        return db.execute(self.conn, query, timeout_s=TIMEOUT_S, max_rows=RESULT_ROWS)
+
+    def tables(self) -> list[str]:
         rows = db.execute(self.conn, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").rows
         return [r[0] for r in rows]
 
     def list_tables(self) -> str:
-        return "\n".join(self._tables())
+        return "\n".join(self.tables())
 
     def describe_table(self, table: str) -> str:
-        if table not in self._tables():
+        if table not in self.tables():
             return f"Error: no such table '{table}'"
         cols = db.execute(self.conn, f"PRAGMA table_info({_quote(table)})").rows
         fks = db.execute(self.conn, f"PRAGMA foreign_key_list({_quote(table)})").rows
@@ -86,24 +97,16 @@ class Toolbox:
         return "\n".join(lines)
 
     def sample_rows(self, table: str, n: int = 3) -> str:
-        if table not in self._tables():
+        if table not in self.tables():
             return f"Error: no such table '{table}'"
         n = max(1, min(int(n), MAX_SAMPLE_ROWS))
-        return render(db.execute(self.conn, f"SELECT * FROM {_quote(table)} LIMIT {n}", max_rows=n))
+        return render(db.execute(self.conn, f"SELECT * FROM {_quote(table)} LIMIT {n}"))
 
     def search_column(self, keyword: str) -> str:
         kw = keyword.lower()
         hits = []
-        for table in self._tables():
+        for table in self.tables():
             for c in db.execute(self.conn, f"PRAGMA table_info({_quote(table)})").rows:
                 if kw in c[1].lower():
                     hits.append(f"{table}.{c[1]} {c[2] or 'ANY'}")
         return "\n".join(hits) if hits else f"No column name contains '{keyword}'"
-
-    def run_sql(self, query: str) -> str:
-        if not verifier.is_read_query(query):
-            return "Error: only SELECT queries are allowed"
-        try:
-            return render(db.execute(self.conn, query, timeout_s=TIMEOUT_S, max_rows=MAX_ROWS))
-        except db.DbError as e:
-            return f"Error: {e}"

@@ -1,0 +1,55 @@
+"""Prompt construction and tool-call parsing: the one protocol shared by
+teacher sampling, SFT data and RL rollouts.
+
+Messages use the OpenAI chat shape (system / user / assistant with tool_calls /
+tool) so that an API teacher, a chat-template renderer and an RL framework all
+consume the same object. Tool schemas are passed alongside the messages rather
+than pasted into the system prompt, because chat templates render them in the
+model's own native format. The initial state intentionally omits columns: the
+policy must earn the schema through tool calls.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+
+_TOOL_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+SYSTEM = """You are an expert SQL analyst working on an unfamiliar SQLite database.
+You know only the table names. Before writing SQL, explore the schema with the
+tools: describe the tables you need, sample real rows to learn value formats,
+and run candidate queries to check their results. Each reply must contain
+exactly one tool call. When you are confident, call `submit` with the final
+SQL; that ends the task. You have at most {max_turns} tool calls in total."""
+
+
+@dataclass(frozen=True)
+class Task:
+    db_id: str
+    question: str
+    evidence: str = ""  # BIRD's external knowledge hint; empty for Spider
+    gold_sql: str | None = None  # training only; never shown to the policy
+
+
+def build_messages(task: Task, tables: list[str], max_turns: int) -> list[dict]:
+    user = f"Database: {task.db_id}\nTables: {', '.join(tables)}\n\nQuestion: {task.question}"
+    if task.evidence:
+        user += f"\nHint: {task.evidence}"
+    return [
+        {"role": "system", "content": SYSTEM.format(max_turns=max_turns)},
+        {"role": "user", "content": user},
+    ]
+
+
+def parse_tool_call(text: str) -> tuple[str, dict] | None:
+    """First well-formed <tool_call> block in raw model text, else None."""
+    for m in _TOOL_CALL.finditer(text):
+        try:
+            call = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(call, dict) and isinstance(call.get("name"), str) and isinstance(call.get("arguments", {}), dict):
+            return call["name"], call.get("arguments", {})
+    return None

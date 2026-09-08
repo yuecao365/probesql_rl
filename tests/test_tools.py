@@ -17,15 +17,17 @@ def box(tmp_path):
     return Toolbox(db.connect(str(path)))
 
 
-def test_specs_cover_all_six_tools_and_only_submit_is_not_callable(box):
+def test_specs_cover_all_six_tools_but_sql_tools_are_not_dispatched(box):
     names = [s["name"] for s in SPECS]
     assert names == ["list_tables", "describe_table", "sample_rows", "search_column", "run_sql", "submit"]
-    assert box.call("submit", {"query": "SELECT 1"}).startswith("Error")
+    assert box.call("submit", {"query": "SELECT 1"}).startswith("Error: unknown tool")
+    assert box.call("run_sql", {"query": "SELECT 1"}).startswith("Error: unknown tool")
+    assert box.call("execute", {"query": "SELECT 1"}).startswith("Error: unknown tool")
 
 
 def test_unknown_tool_and_private_methods_are_errors(box):
     assert box.call("drop_everything", {}).startswith("Error: unknown tool")
-    assert box.call("_tables", {}).startswith("Error: unknown tool")
+    assert box.call("tables", {}).startswith("Error: unknown tool")
     assert box.call("call", {"name": "x", "args": {}}).startswith("Error: unknown tool")
 
 
@@ -60,7 +62,7 @@ def test_cell_truncation_null_and_blob(box):
     cells = out.splitlines()[1].split(" | ")
     assert len(cells[1]) == MAX_CELL_CHARS and cells[1].endswith("…")
     assert cells[2] == "<blob 3B>"
-    assert box.call("run_sql", {"query": "SELECT note FROM orders"}).splitlines()[1] == "NULL"
+    assert render(box.execute("SELECT note FROM orders")).splitlines()[1] == "NULL"
 
 
 def test_search_column_case_insensitive_and_no_hits(box):
@@ -68,22 +70,35 @@ def test_search_column_case_insensitive_and_no_hits(box):
     assert box.call("search_column", {"keyword": "zzz"}).startswith("No column")
 
 
-def test_run_sql_truncates_at_max_rows(box):
-    lines = box.call("run_sql", {"query": 'SELECT id FROM "my table"'}).splitlines()
+def test_execute_keeps_full_result_but_render_shows_max_rows(box):
+    res = box.execute('SELECT id FROM "my table"')
+    assert len(res.rows) == 30 and not res.truncated
+    lines = render(res).splitlines()
     assert len(lines) == MAX_ROWS + 2 and lines[-1].startswith("... (showing first 20")
 
 
-def test_run_sql_errors_become_text(box):
-    assert box.call("run_sql", {"query": "SELECT nope FROM orders"}) == "Error: no such column: nope"
-    assert box.call("run_sql", {"query": "DELETE FROM orders"}) == "Error: only SELECT queries are allowed"
-    assert box.call("run_sql", {"query": "PRAGMA table_info(orders)"}) == "Error: only SELECT queries are allowed"
-    assert box.call("run_sql", {"query": "SELECT oid FROM orders WHERE 1=0"}) == "(empty result)"
+def test_render_flags_db_level_truncation(box):
+    res = db.execute(box.conn, 'SELECT id FROM "my table"', max_rows=3)
+    assert render(res, max_rows=10).splitlines()[-1] == "... (showing first 3 rows, more exist)"
 
 
-def test_run_sql_timeout_becomes_text(box, monkeypatch):
+@pytest.mark.parametrize(
+    "query, message",
+    [
+        ("SELECT nope FROM orders", "no such column: nope"),
+        ("DELETE FROM orders", "only SELECT queries are allowed"),
+        ("PRAGMA table_info(orders)", "only SELECT queries are allowed"),
+    ],
+)
+def test_execute_rejections(box, query, message):
+    with pytest.raises(db.DbError, match=message):
+        box.execute(query)
+
+
+def test_execute_timeout(box, monkeypatch):
     monkeypatch.setattr("env.tools.TIMEOUT_S", 0.1)
-    out = box.call("run_sql", {"query": "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c"})
-    assert out.startswith("Error: query exceeded")
+    with pytest.raises(db.QueryTimeout):
+        box.execute("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c")
 
 
 def test_render_empty_columns_only():
