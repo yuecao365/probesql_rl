@@ -1,29 +1,23 @@
 """Result-set comparison: the terminal reward and the process-reward signal.
 
-Two result sets are compared as multisets of rows after normalizing every cell,
-so `SELECT a, b` vs `SELECT b, a`, `1` vs `'1'` vs `1.0`, and unordered rows all
-count as the same answer, while duplicates (SELECT vs SELECT DISTINCT) do not.
-Floats are canonicalized by rounding to 6 significant digits instead of pairwise
-isclose(); that loses exactness at rounding boundaries but keeps rows hashable,
-which is what lets `overlap` be plain multiset arithmetic and guarantees
-`overlap == 1` exactly when the unordered contents match.
+Equality deliberately mirrors BIRD's official execution accuracy: a set of row
+tuples, so row order and duplicates are ignored but column order matters. On top
+of that, cells are normalized so SQLite's weak typing and float noise cannot
+flip the verdict (`1` / `'1'` / `1.0` agree, floats round to 6 significant
+digits). Staying at least as strict as the official metric is what keeps the
+training reward from teaching answers the evaluation would reject.
 
-Row order is checked only in `equal(..., ordered=True)`, which the caller sets
-when the gold SQL has ORDER BY. `overlap` never checks order: it is a partial
-credit signal about content, and the terminal reward catches ordering mistakes.
+Floats are rounded rather than compared with isclose() so rows stay hashable:
+`overlap` is then plain set arithmetic and equals 1 exactly when `equal` holds.
 """
 
 from __future__ import annotations
 
 import re
-from collections import Counter
 from collections.abc import Iterable, Sequence
 
 _INT_LITERAL = re.compile(r"-?(0|[1-9][0-9]*)")
 _FLOAT_LITERAL = re.compile(r"-?(0|[1-9][0-9]*)\.[0-9]+")
-
-# Ranks give a total order across types so rows with mixed cells can be sorted.
-_RANK = {type(None): 0, int: 1, float: 1, str: 2, bytes: 3}
 
 
 def _canon_cell(v):
@@ -42,40 +36,31 @@ def _canon_cell(v):
     return v
 
 
-def _sort_key(v):
-    return (_RANK[type(v)], v)
+def canonical(rows: Iterable[Sequence]) -> set[tuple]:
+    return {tuple(_canon_cell(c) for c in row) for row in rows}
 
 
-def canonical(rows: Iterable[Sequence]) -> list[tuple]:
-    """Normalize cells and sort them within each row, so column order is irrelevant."""
-    return [tuple(sorted((_canon_cell(c) for c in row), key=_sort_key)) for row in rows]
-
-
-def equal(pred: Iterable[Sequence], gold: Iterable[Sequence], *, ordered: bool = False) -> bool:
-    p, g = canonical(pred), canonical(gold)
-    return p == g if ordered else Counter(p) == Counter(g)
+def equal(pred: Iterable[Sequence], gold: Iterable[Sequence]) -> bool:
+    return canonical(pred) == canonical(gold)
 
 
 def overlap(pred: Iterable[Sequence], gold: Iterable[Sequence]) -> float:
-    """Multiset Jaccard similarity of the two row sets, in [0, 1]."""
-    p, g = Counter(canonical(pred)), Counter(canonical(gold))
-    union = sum((p | g).values())
-    if union == 0:
-        return 1.0
-    return sum((p & g).values()) / union
+    """Jaccard similarity of the two row sets, in [0, 1]; 1 for two empty sets."""
+    p, g = canonical(pred), canonical(gold)
+    union = len(p | g)
+    return 1.0 if union == 0 else len(p & g) / union
 
 
 def deltas(overlaps: Sequence[float]) -> list[float]:
-    """Per-turn process reward from a trajectory's overlap scores.
+    """Δ_k = overlap_k − overlap_{k−1}, with overlap_0 = 0.
 
-    Potential-based shaping with the potential being the best overlap reached so
-    far, so a turn is credited only for exceeding every previous turn. The sum
-    telescopes to the best overlap, and oscillating between two queries earns
-    nothing after the first visit.
+    Signed on purpose: a turn that regresses is penalized, which is exactly the
+    per-turn distinction turn-level credit assignment needs. The sum telescopes
+    to the last overlap, so no sequence of queries can farm more total credit
+    than the result it ends on.
     """
-    best, out = 0.0, []
+    prev, out = 0.0, []
     for o in overlaps:
-        gain = max(o - best, 0.0)
-        out.append(gain)
-        best = max(best, o)
+        out.append(o - prev)
+        prev = o
     return out
