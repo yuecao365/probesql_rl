@@ -1,5 +1,5 @@
-"""Prompt construction and tool-call parsing: the one protocol shared by
-teacher sampling, SFT data and RL rollouts.
+"""Prompt construction: the one protocol shared by teacher sampling, SFT data
+and RL rollouts.
 
 Messages use the OpenAI chat shape (system / user / assistant with tool_calls /
 tool) so that an API teacher, a chat-template renderer and an RL framework all
@@ -11,11 +11,7 @@ policy must earn the schema through tool calls.
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
-
-_TOOL_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
 SYSTEM = """You are an expert SQL analyst working on an unfamiliar SQLite database.
 You know only the table names. Before writing SQL, explore the schema with the
@@ -42,14 +38,3 @@ def build_messages(task: Task, tables: list[str], max_turns: int) -> list[dict]:
         {"role": "user", "content": user},
     ]
 
-
-def parse_tool_call(text: str) -> tuple[str, dict] | None:
-    """First well-formed <tool_call> block in raw model text, else None."""
-    for m in _TOOL_CALL.finditer(text):
-        try:
-            call = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(call, dict) and isinstance(call.get("name"), str) and isinstance(call.get("arguments", {}), dict):
-            return call["name"], call.get("arguments", {})
-    return None

@@ -45,9 +45,9 @@ These are fixed at the end of M0 and will not change mid-project, so numbers sta
 ## Layout
 
 ```
-env/        db.py sandbox · compare.py judge + overlap · verifier.py · tools.py · prompt.py · rollout.py · tasks.py
-eval/       bird_official.py (verbatim leaderboard judge) · consistency.py
-scripts/    check_consistency.py
+env/        db.py sandbox · compare.py judge + overlap · verifier.py · tools.py · prompt.py · rollout.py · tasks.py · policy.py
+eval/       bird_official.py (verbatim leaderboard judge) · consistency.py · metrics.py
+scripts/    serve_vllm.sh · rollout.py · single_turn.py · metrics.py · check_consistency.py
 tests/      pytest, edge cases only
 data/ models/ ckpt/   symlinks to the data disk (git-ignored)
 docs/       notes, incl. the Agentic RL theory write-up
@@ -57,7 +57,15 @@ docs/       notes, incl. the Agentic RL theory write-up
 pytest -q
 python scripts/check_consistency.py --json data/bird/dev_20240627/dev.json \
     --db-dir data/bird/dev_20240627/dev_databases --gold 20
+
+bash scripts/serve_vllm.sh models/Qwen2.5-Coder-7B-Instruct qwen7b       # on the GPU box
+python scripts/rollout.py --json data/bird/dev_20240627/dev.json --db-dir data/bird/dev_20240627/dev_databases \
+    --n 300 --g 1 --base-url http://localhost:8000/v1 --model qwen7b --out outputs/dev300_agent.jsonl
+python scripts/metrics.py outputs/dev300_agent.jsonl
 ```
+
+Any OpenAI-compatible endpoint works as the policy, so the same rollout code
+drives the local student and the API teacher.
 
 ## Notes
 
