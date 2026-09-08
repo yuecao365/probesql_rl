@@ -1,32 +1,66 @@
-# text2sql_rl
+# ProbeSQL-RL
 
-用 GRPO 训练一个**多轮执行反馈**的 Text-to-SQL agent：模型生成 SQL → 在 SQLite 沙箱中执行 → 读取结果或报错 → 修正 → 提交，以执行结果匹配作为可验证奖励（RLVR）。
+Post-training a **schema-probing Text-to-SQL agent** with multi-turn RL. The policy is
+told only the database name and its table names; it has to discover columns, value
+formats and join keys through tools before it can write SQL. Training compares
+outcome-only GRPO against verifiable per-turn process rewards and several turn-level
+credit-assignment schemes, on BIRD with Spider held out for out-of-distribution evaluation.
 
-项目仍在进行中。当前已完成的是理论部分。
+Status: **M0 (environment + evaluation)**. Nothing has been trained yet.
 
-## 笔记
+## Environment
 
-📐 **[Agentic RL 理论笔记](https://yuecao365.github.io/text2sql_rl/theory.html)** — 从策略梯度到多轮 agent 训练的系统整理
+| Tool | Returns |
+|---|---|
+| `list_tables()` | table names |
+| `describe_table(table)` | columns, types, primary key, foreign keys |
+| `sample_rows(table, n<=5)` | real rows, so value formats are learned from data |
+| `search_column(keyword)` | `table.column type` for every column whose name contains the keyword |
+| `run_sql(query)` | first 20 rows of a read-only SELECT, or the error message |
+| `submit(query)` | ends the episode |
 
-- Part 0 · 问题设定：token-level MDP 与 sequence-level bandit 两种视角
-- Part 1 · 策略梯度基础：REINFORCE、baseline 定理、advantage、GAE
-- Part 2 · 从 PPO 到 GRPO：重要性采样、信任域与 clip、group baseline、DAPO 四改、Dr. GRPO、KL 取舍
-- Part 3 · 多轮 Agentic RL：observation masking 的严格推导、credit assignment、异常轨迹、多轮特有指标
-- Part 4 · RLVR 与 reward 设计：验证器设计的三个维度、Goodhart 定律、reward hacking 的形态
-- Part 5 · 训练基础设施：训推分离、权重同步、显存构成、LoRA in RL、序列长度预算
-- Part 6 · 方法族的边界
+Every query runs on a read-only connection behind an allow-list authorizer, a 5 s
+progress-handler timeout and row/cell truncation. A verifier flags degenerate queries
+(`WHERE 1=0`, `LIMIT 0`, constant SELECTs), formatting-only duplicates and idle streaks;
+those flags are both safety limits and process-reward inputs.
 
-笔记索引：<https://yuecao365.github.io/text2sql_rl/>
+Messages use the OpenAI chat shape with Qwen-style `<tool_call>` parsing, so the API
+teacher, the chat-template renderer and the RL framework consume one protocol
+(`env/prompt.py`). Teacher sampling and RL rollouts share `env/rollout.py`.
 
-## 计划中的内容
+## Locked decisions
 
-- [ ] SQLite 沙箱工具环境（只读、超时、结果截断）
-- [ ] 多轮驱动循环与轨迹 dump
-- [ ] 快速验证器 + 官方评测套件的一致性校验
-- [ ] 基于 verl 的 GRPO 训练配置
-- [ ] Reward 设计与 credit assignment 的消融
-- [ ] 训练曲线与评测结果
+These are fixed at the end of M0 and will not change mid-project, so numbers stay comparable.
 
-## 参考
+- **Correctness = BIRD's official rule**: `set(pred_rows) == set(gold_rows)`, column order
+  sensitive, row order and duplicates ignored. On top of that, cells are normalized
+  (`1` / `'1'` / `1.0` agree; floats to 6 significant digits). `scripts/check_consistency.py`
+  reports every case where this verdict differs from the verbatim official judge.
+- **Process signal**: `overlap = |P ∩ G| / |P ∪ G|` over normalized row sets;
+  `Δ_k = overlap_k − overlap_{k−1}` (signed, `overlap_0 = 0`), computed only on
+  `run_sql` / `submit` turns. Gold results are used in training only, never at evaluation.
+- **Hidden schema**: BIRD's `database_description` files are never shown to the policy.
+- **Turn budget** 10; evaluation is 4 rollouts per question, empirical pass@1.
 
-主要依据 DeepSeekMath (GRPO)、DAPO、Dr. GRPO 三篇，以及 verl 的实现。完整文献列表见理论笔记末尾。
+## Layout
+
+```
+env/        db.py sandbox · compare.py judge + overlap · verifier.py · tools.py · prompt.py · rollout.py · tasks.py
+eval/       bird_official.py (verbatim leaderboard judge) · consistency.py
+scripts/    check_consistency.py
+tests/      pytest, edge cases only
+data/ models/ ckpt/   symlinks to the data disk (git-ignored)
+docs/       notes, incl. the Agentic RL theory write-up
+```
+
+```
+pytest -q
+python scripts/check_consistency.py --json data/bird/dev_20240627/dev.json \
+    --db-dir data/bird/dev_20240627/dev_databases --gold 20
+```
+
+## Notes
+
+📐 [Agentic RL theory notes](https://yuecao365.github.io/probesql_rl/theory.html) — policy
+gradient → GRPO/DAPO/Dr.GRPO → multi-turn masking and credit assignment → RLVR reward design →
+training infrastructure.

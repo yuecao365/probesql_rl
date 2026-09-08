@@ -38,6 +38,8 @@ def main():
     for v in verdicts:
         if not v.agree:
             print(f"DISAGREE id={v.id} ours={v.ours} official={v.official}")
+        elif args.gold is not None and not v.official:
+            print(f"BROKEN_GOLD id={v.id}")  # a gold that cannot even match itself
     agree = sum(v.agree for v in verdicts)
     accepted = sum(v.official for v in verdicts)
     print(f"{len(verdicts)} judged, {agree} agree, official accepts {accepted}")
