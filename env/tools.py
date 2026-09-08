@@ -20,6 +20,7 @@ from env import db, verifier
 
 MAX_ROWS = 20  # rows shown to the model
 RESULT_ROWS = 10_000  # rows kept for reward computation
+GOLD_TIMEOUT_S = 30.0  # gold queries get the official judge's budget, not the policy's 5 s
 MAX_SAMPLE_ROWS = 5
 MAX_CELL_CHARS = 64
 TIMEOUT_S = 5.0

@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from env import compare, db, prompt, verifier
-from env.tools import RESULT_ROWS, SPECS, Toolbox, render
+from env.tools import GOLD_TIMEOUT_S, RESULT_ROWS, SPECS, Toolbox, render
 
 # (messages, tool specs) -> assistant message {"role", "content", "tool_calls": [{"id", "function": {"name", "arguments": dict}}]}
 # plus "truncated": True when generation hit the length limit. Adapters for an
@@ -50,7 +50,7 @@ class Trajectory:
 
 def run(task: prompt.Task, conn: sqlite3.Connection, policy: Policy, max_turns: int = 10) -> Trajectory:
     box = Toolbox(conn)
-    gold_rows = db.execute(conn, task.gold_sql, max_rows=RESULT_ROWS).rows if task.gold_sql else None
+    gold_rows = db.execute(conn, task.gold_sql, timeout_s=GOLD_TIMEOUT_S, max_rows=RESULT_ROWS).rows if task.gold_sql else None
     traj = Trajectory(prompt.build_messages(task, box.tables(), max_turns))
     tracker = verifier.Tracker()
 

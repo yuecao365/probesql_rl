@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from env import compare, db
 from env.tasks import Example
-from env.tools import RESULT_ROWS
+from env.tools import GOLD_TIMEOUT_S, RESULT_ROWS
 from eval.bird_official import judge
 
 
@@ -31,8 +31,8 @@ def ours(predicted_sql: str, gold_sql: str, db_path: str) -> bool:
     """The verdict the rollout's terminal reward would give."""
     conn = db.connect(db_path)
     try:
-        gold = db.execute(conn, gold_sql, max_rows=RESULT_ROWS).rows
-        pred = db.execute(conn, predicted_sql, max_rows=RESULT_ROWS).rows
+        gold = db.execute(conn, gold_sql, timeout_s=GOLD_TIMEOUT_S, max_rows=RESULT_ROWS).rows
+        pred = db.execute(conn, predicted_sql, timeout_s=GOLD_TIMEOUT_S, max_rows=RESULT_ROWS).rows
     except db.DbError:
         return False  # a broken gold can never be matched, same as the official rule
     return compare.equal(pred, gold)
