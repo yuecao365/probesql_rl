@@ -3,7 +3,7 @@
     python scripts/check_consistency.py --json data/bird/dev/dev.json --db-dir data/bird/dev/dev_databases --gold 20
     python scripts/check_consistency.py --json ... --db-dir ... --predictions preds.jsonl
 
-`--gold N` judges the first N gold queries against themselves (every verdict
+`--spider` switches to Spider's field names. `--gold N` judges the first N gold queries against themselves (every verdict
 must be accept/accept); `--predictions` takes JSON lines of {"id", "sql"}.
 """
 
@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, ".")
 
-from env.tasks import load_bird  # noqa: E402
+from env.tasks import load_bird, load_spider  # noqa: E402
 from eval.consistency import check  # noqa: E402
 
 
@@ -21,12 +21,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", required=True)
     ap.add_argument("--db-dir", required=True)
+    ap.add_argument("--spider", action="store_true", help="Spider JSON layout instead of BIRD")
     group = ap.add_mutually_exclusive_group(required=True)
     group.add_argument("--gold", type=int, metavar="N")
     group.add_argument("--predictions")
     args = ap.parse_args()
 
-    examples = load_bird(args.json, args.db_dir)
+    examples = (load_spider if args.spider else load_bird)(args.json, args.db_dir)
     if args.gold is not None:
         examples = examples[: args.gold]
         preds = {ex.id: ex.task.gold_sql for ex in examples}
