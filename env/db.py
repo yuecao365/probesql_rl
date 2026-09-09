@@ -65,9 +65,9 @@ def connect(path: str) -> sqlite3.Connection:
 
 
 def execute(
-    conn: sqlite3.Connection, sql: str, *, timeout_s: float = 5.0, max_rows: int = 1000
+    conn: sqlite3.Connection, sql: str, *, timeout_s: float = 5.0, max_rows: int | None = 1000
 ) -> Result:
-    """Run one read-only statement and return at most `max_rows` rows.
+    """Run one read-only statement and return at most `max_rows` rows (all rows if None).
 
     Raises QueryTimeout if the statement does not finish within `timeout_s`,
     DbError for every other failure.
@@ -79,7 +79,7 @@ def execute(
         cur = conn.execute(sql)
         if cur.description is None:
             raise DbError("statement returned no result set")
-        rows = cur.fetchmany(max_rows + 1)
+        rows = cur.fetchall() if max_rows is None else cur.fetchmany(max_rows + 1)
     except sqlite3.OperationalError as e:
         if "interrupted" in str(e):
             raise QueryTimeout(f"query exceeded {timeout_s}s") from e
@@ -90,4 +90,6 @@ def execute(
     finally:
         conn.set_progress_handler(None, 0)
     columns = tuple(d[0] for d in cur.description)
+    if max_rows is None:
+        return Result(columns, rows, truncated=False)
     return Result(columns, rows[:max_rows], truncated=len(rows) > max_rows)

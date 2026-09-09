@@ -91,3 +91,20 @@ Second pass, 187 uncovered questions × 6: only 13 more questions solved (1.8% o
 questions the teacher never solved in 12 attempts are saved as `outputs/teacher_unsolved_ids.txt`
 for the label audit (D3): a teacher at 57% pass@1 failing 12/12 is a strong hint the gold or the
 question is the problem, not the model.
+
+## Corrections from the post-M2 review (2026-09-10)
+
+Triggered by the batched-tool-call question. Two verifications that M0 had skipped were run:
+the judge was compared with the official one on **real model predictions** (M1 outputs, 862
+SQL) instead of gold-vs-gold, and dev golds were checked against the reward-side row cap.
+
+| finding | effect | fix |
+|---|---|---|
+| Float rounding / numeric-string coercion in the judge | accepted `39.752034` for a gold `ROUND(...,5) = 39.75203`; official rejects → training reward looser than eval | judge is now the official rule verbatim on raw values |
+| 10 000-row cap on reward-side results | queries without `DISTINCT` returning 56k–634k rows were judged wrong after truncation; official fetches everything (19 dev golds exceed the cap) | no row cap on gold, `run_sql` and `submit`; only timeouts remain |
+| `submit` judged with the 5 s probe timeout | a slow but correct final query could be scored 0 while the official judge (30 s) accepts it | `submit` uses the 30 s budget, probes keep 5 s |
+| unbounded tool calls per reply | per-call process rewards could be farmed by batching cheap queries; 10 turns no longer bounded work | at most 4 calls per reply (covers 99.6% of teacher replies); extras get an error observation; SFT rejects such trajectories; process rewards will be aggregated per turn in M4 |
+| system prompt changed after M1 (batching wording) | arm 0 baselines were run with the earlier prompt | rerun arm 0 with the final prompt on the next GPU session before SFT numbers are compared |
+
+Gold-vs-gold consistency cannot detect leniency; every future judge change is validated on
+model predictions.

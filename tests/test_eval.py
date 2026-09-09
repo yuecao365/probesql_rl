@@ -51,7 +51,7 @@ def test_ours_broken_gold_is_false(db_path):
     assert ours("SELECT id FROM t", "SELECT nope FROM t", db_path) is False
 
 
-def test_check_reports_direction_of_disagreement(tmp_path, db_path):
+def test_check_matches_official_and_skips_missing(tmp_path, db_path):
     (tmp_path / "dev.json").write_text(json.dumps([
         {"question_id": i, "db_id": "d", "question": "q", "evidence": "", "SQL": "SELECT id FROM t"} for i in range(4)
     ]))
@@ -59,11 +59,11 @@ def test_check_reports_direction_of_disagreement(tmp_path, db_path):
     preds = {
         "0": "SELECT DISTINCT id FROM t",  # both accept
         "1": "SELECT name FROM t",  # both reject
-        "2": "SELECT code FROM t",  # ours normalizes '1' to 1, official does not: lenient
+        "2": "SELECT code FROM t",  # '1' vs 1: both reject, no normalization on our side either
         # "3" has no prediction and must be skipped
     }
     verdicts = {v.id: v for v in check(examples, preds)}
     assert set(verdicts) == {"0", "1", "2"}
     assert verdicts["0"].agree and verdicts["0"].ours
     assert verdicts["1"].agree and not verdicts["1"].ours
-    assert not verdicts["2"].agree and verdicts["2"].ours and not verdicts["2"].official
+    assert verdicts["2"].agree and not verdicts["2"].ours

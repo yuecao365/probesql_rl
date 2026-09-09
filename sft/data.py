@@ -13,7 +13,7 @@ tool results, template scaffolding) is masked out of the loss.
 
 from __future__ import annotations
 
-from env.tools import SPECS
+from env.tools import MAX_CALLS_PER_REPLY, SPECS
 
 TOOLS = [{"type": "function", "function": t} for t in SPECS]
 IGNORE = -100
@@ -31,6 +31,8 @@ def reject_reason(record: dict) -> str | None:
         return "duplicate_call"
     if any(m.get("lenient") for m in record["messages"]):
         return "lenient_format"
+    if any(len(m.get("tool_calls") or []) > MAX_CALLS_PER_REPLY for m in record["messages"]):
+        return "too_many_calls"
     return None
 
 

@@ -9,7 +9,9 @@ exact text is part of what SFT data and RL rollouts must share.
 
 `run_sql` and `submit` are declared here but executed by the rollout loop via
 `execute()`, because their full result feeds the reward while the model only
-sees the first MAX_ROWS rows.
+sees the first MAX_ROWS rows. Reward-side results are never row-capped: a
+cap made the judge disagree with the official one on queries returning more
+rows than the cap.
 """
 
 from __future__ import annotations
@@ -18,9 +20,9 @@ import sqlite3
 
 from env import db, verifier
 
-MAX_ROWS = 20  # rows shown to the model
-RESULT_ROWS = 10_000  # rows kept for reward computation
-GOLD_TIMEOUT_S = 30.0  # gold queries get the official judge's budget, not the policy's 5 s
+MAX_ROWS = 20  # rows shown to the model; reward-side executions keep every row, like the official judge
+GOLD_TIMEOUT_S = 30.0  # gold and submitted queries get the official judge's budget; probes get TIMEOUT_S
+MAX_CALLS_PER_REPLY = 4  # bounds work per turn and blanks the "batch cheap queries" reward exploit
 MAX_SAMPLE_ROWS = 5
 MAX_CELL_CHARS = 64
 MAX_OBS_CHARS = 2000  # ~600 tokens; keeps a 10-turn episode inside the context budget
@@ -81,11 +83,11 @@ class Toolbox:
         except TypeError as e:
             return f"Error: bad arguments for {name}: {e}"
 
-    def execute(self, query: str) -> db.Result:
+    def execute(self, query: str, timeout_s: float = TIMEOUT_S) -> db.Result:
         """Full result of a policy-written SELECT. Raises db.DbError."""
         if not verifier.is_read_query(query):
             raise db.DbError("only SELECT queries are allowed")
-        return db.execute(self.conn, query, timeout_s=TIMEOUT_S, max_rows=RESULT_ROWS)
+        return db.execute(self.conn, query, timeout_s=timeout_s, max_rows=None)
 
     def tables(self) -> list[str]:
         rows = db.execute(self.conn, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").rows

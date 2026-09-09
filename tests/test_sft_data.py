@@ -18,8 +18,8 @@ def step(ok=True, duplicate=False):
     return {"tool": "run_sql", "ok": ok, "duplicate": duplicate}
 
 
-def record(correct=True, status="submitted", steps=(), lenient=False):
-    msgs = [{"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "submit", "arguments": {"query": "SELECT 1"}}}]}]
+def record(correct=True, status="submitted", steps=(), lenient=False, calls=1):
+    msgs = [{"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "submit", "arguments": {"query": "SELECT 1"}}}] * calls}]
     if lenient:
         msgs[0]["lenient"] = True
     return {"correct": correct, "status": status, "steps": list(steps), "messages": msgs}
@@ -33,6 +33,7 @@ def record(correct=True, status="submitted", steps=(), lenient=False):
         (record(steps=[step(ok=False)]), "tool_error"),
         (record(steps=[step(duplicate=True)]), "duplicate_call"),
         (record(lenient=True), "lenient_format"),
+        (record(calls=5), "too_many_calls"),
     ],
 )
 def test_reject(rec, reason):

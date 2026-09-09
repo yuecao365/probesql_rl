@@ -81,6 +81,11 @@ def test_truncation_boundary(conn):
     assert len(over.rows) == 5 and over.truncated
 
 
+def test_unlimited_rows_never_truncate(conn):
+    res = execute(conn, "SELECT id FROM t", max_rows=None)
+    assert len(res.rows) == 11 and not res.truncated
+
+
 def test_columns_and_empty_result(conn):
     res = execute(conn, "SELECT id AS k, name FROM t WHERE 1 = 0")
     assert res == Result(("k", "name"), [], False)

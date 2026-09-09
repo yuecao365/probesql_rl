@@ -73,6 +73,7 @@ def test_search_column_case_insensitive_and_no_hits(box):
 def test_execute_keeps_full_result_but_render_shows_max_rows(box):
     res = box.execute('SELECT id FROM "my table"')
     assert len(res.rows) == 30 and not res.truncated
+    assert not box.execute('SELECT a.id FROM "my table" a, "my table" b, "my table" c').truncated  # 27000 rows, no cap
     lines = render(res).splitlines()
     assert len(lines) == MAX_ROWS + 2 and lines[-1].startswith("... (showing first 20")
 
@@ -95,10 +96,9 @@ def test_execute_rejections(box, query, message):
         box.execute(query)
 
 
-def test_execute_timeout(box, monkeypatch):
-    monkeypatch.setattr("env.tools.TIMEOUT_S", 0.1)
+def test_execute_timeout(box):
     with pytest.raises(db.QueryTimeout):
-        box.execute("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c")
+        box.execute("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c", timeout_s=0.1)
 
 
 def test_render_empty_columns_only():

@@ -4,7 +4,7 @@ import pytest
 
 from env import db
 from env.prompt import Task
-from env.rollout import run
+from env.rollout import TOO_MANY_CALLS, run
 
 
 @pytest.fixture
@@ -122,3 +122,19 @@ def test_turn_budget_counts_replies_not_calls(conn):
 def test_broken_gold_raises_before_any_turn(conn):
     with pytest.raises(db.DbError):
         run(Task("db", "q", gold_sql="SELECT nope FROM t"), conn, scripted(), max_turns=5)
+
+
+def test_calls_past_the_cap_are_not_executed_but_still_answered(conn):
+    reply = call("list_tables")
+    reply["tool_calls"] = [call("list_tables")["tool_calls"][0] for _ in range(6)]
+    traj = run(TASK, conn, scripted(reply, call("submit", query="SELECT 1")), max_turns=5)
+    assert len([s for s in traj.steps if s.turn == 0]) == 4
+    tool_msgs = [m for m in traj.messages if m["role"] == "tool"]
+    assert len(tool_msgs) == 6 and tool_msgs[-1]["content"] == TOO_MANY_CALLS and tool_msgs[-2]["content"] == TOO_MANY_CALLS
+
+
+def test_submit_uses_the_official_time_budget(conn, monkeypatch):
+    monkeypatch.setattr("env.rollout.TIMEOUT_S", 0.05)
+    slow = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c LIMIT 200000) SELECT count(*) FROM c"
+    traj = run(TASK, conn, scripted(call("run_sql", query=slow), call("submit", query=slow)), max_turns=5)
+    assert traj.steps[0].ok is False and traj.steps[1].ok is True

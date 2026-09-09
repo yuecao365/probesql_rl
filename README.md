@@ -32,13 +32,14 @@ teacher, the chat-template renderer and the RL framework consume one protocol
 
 These are fixed at the end of M0 and will not change mid-project, so numbers stay comparable.
 
-- **Correctness = BIRD's official rule**: `set(pred_rows) == set(gold_rows)`, column order
-  sensitive, row order and duplicates ignored. On top of that, cells are normalized
-  (`1` / `'1'` / `1.0` agree; floats to 6 significant digits). `scripts/check_consistency.py`
-  reports every case where this verdict differs from the verbatim official judge.
-- **Process signal**: `overlap = |P ∩ G| / |P ∪ G|` over normalized row sets;
-  `Δ_k = overlap_k − overlap_{k−1}` (signed, `overlap_0 = 0`), computed only on
-  `run_sql` / `submit` turns. Gold results are used in training only, never at evaluation.
+- **Correctness = BIRD's official rule, verbatim**: `set(pred_rows) == set(gold_rows)` on raw
+  values, column order sensitive, row order and duplicates ignored, no normalization, no row
+  cap, 30 s budget. `scripts/check_consistency.py` checks this against the official judge on
+  real model predictions (862/862 agree on BIRD dev after removing an earlier float rounding).
+- **Process signal**: `overlap = |P ∩ G| / |P ∪ G|` over the same row sets;
+  `Δ_k = overlap_k − overlap_{k−1}` (signed, `overlap_0 = 0`), computed on `run_sql` / `submit`
+  calls and aggregated per turn. Gold results are used in training only, never at evaluation.
+- **One turn = one reply**, up to 4 tool calls executed in order; probes get 5 s, `submit` 30 s.
 - **Hidden schema**: BIRD's `database_description` files are never shown to the policy.
 - **Turn budget** 10; evaluation is 4 rollouts per question, empirical pass@1.
 

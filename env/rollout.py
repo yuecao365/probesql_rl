@@ -9,10 +9,11 @@ stored on each Step so reward weighting can change without re-running anything.
 
 An episode ends on `submit`, on a reply without a tool call (parse_error), on a
 truncated generation, or when the turn budget runs out. Those four statuses
-are the anomaly counters the training dashboard needs. A reply may carry
-several tool calls; they run in order, each gets its own tool message, and a
-`submit` ends the episode as soon as it is reached. A turn is one reply, so
-turn-level credit is unaffected by how many probes a reply batches.
+are the anomaly counters the training dashboard needs. A reply may carry up
+to MAX_CALLS_PER_REPLY tool calls; they run in order, each gets its own tool
+message, and a `submit` ends the episode as soon as it is reached. Calls past
+the cap are not executed and get an error observation. A turn is one reply,
+so turn-level credit is unaffected by how many probes a reply batches.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from env import compare, db, prompt, verifier
-from env.tools import GOLD_TIMEOUT_S, RESULT_ROWS, SPECS, Toolbox, render
+from env.tools import GOLD_TIMEOUT_S, MAX_CALLS_PER_REPLY, SPECS, TIMEOUT_S, Toolbox, render
+
+TOO_MANY_CALLS = f"Error: at most {MAX_CALLS_PER_REPLY} tool calls per reply; this call was not executed"
 
 # (messages, tool specs) -> assistant message {"role", "content", "tool_calls": [{"id", "function": {"name", "arguments": dict}}]}
 # plus "truncated": True when generation hit the length limit. Adapters for an
@@ -54,7 +57,7 @@ class Trajectory:
 
 def run(task: prompt.Task, conn: sqlite3.Connection, policy: Policy, max_turns: int = 10) -> Trajectory:
     box = Toolbox(conn)
-    gold_rows = db.execute(conn, task.gold_sql, timeout_s=GOLD_TIMEOUT_S, max_rows=RESULT_ROWS).rows if task.gold_sql else None
+    gold_rows = db.execute(conn, task.gold_sql, timeout_s=GOLD_TIMEOUT_S, max_rows=None).rows if task.gold_sql else None
     traj = Trajectory(prompt.build_messages(task, box.tables(), max_turns))
     tracker = verifier.Tracker()
 
@@ -69,12 +72,16 @@ def run(task: prompt.Task, conn: sqlite3.Connection, policy: Policy, max_turns: 
             traj.status = "parse_error"
             return traj
 
-        for call in calls:
+        for i, call in enumerate(calls):
             name, args = call["function"]["name"], call["function"]["arguments"]
+            if i >= MAX_CALLS_PER_REPLY:
+                traj.messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": TOO_MANY_CALLS})
+                continue
             if name in ("run_sql", "submit"):
                 query = str(args.get("query", ""))
                 try:
-                    result = box.execute(query)
+                    # The submission is judged with the official 30 s budget; probes stay cheap.
+                    result = box.execute(query, timeout_s=GOLD_TIMEOUT_S if name == "submit" else TIMEOUT_S)
                     observation, ok, rows = render(result), True, result.rows
                 except db.DbError as e:
                     observation, ok, rows = f"Error: {e}", False, []
