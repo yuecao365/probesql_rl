@@ -44,6 +44,7 @@ def summarize(records) -> dict:
     b = buckets(records)
     n_q = sum(len(v) for v in b.values())
     steps = [s for r in records for s in r["steps"]]
+    calls = [m for r in records for m in r["messages"] if m.get("tool_calls")]
     first = [(r, _first_sql_correct(r)) for r in records]
     wrong_first = [r for r, f in first if f is False]
     by_diff = defaultdict(list)
@@ -57,6 +58,7 @@ def summarize(records) -> dict:
         "buckets": {k: len(v) / n_q for k, v in b.items()},
         "status": dict(Counter(r["status"] for r in records)),
         "avg_turns": len(steps) / n,
+        "lenient_call_ratio": sum(bool(m.get("lenient")) for m in calls) / max(len(calls), 1),
         "avg_completion_tokens": sum(_tokens(r) for r in records) / n,
         "probe_turn_ratio": sum(s["tool"] not in SQL_TOOLS for s in steps) / max(len(steps), 1),
         "first_sql_acc": sum(f is True for _, f in first) / max(sum(f is not None for _, f in first), 1),

@@ -6,18 +6,26 @@ API teacher, and the server does chat-template rendering and tool-call parsing
 in the model's native format. The adapter only translates between the wire
 format and the message shape rollout.py expects: tool arguments are a JSON
 string on the wire and a dict internally, and the internal `usage` / `truncated`
-fields never leave the process.
+/ `lenient` fields never leave the process.
+
+Untrained models often write the call as bare JSON without the `<tool_call>`
+tags the server's parser needs. With `lenient=True` the first JSON object that
+carries a `name` is accepted instead and the reply is flagged, so zero-shot
+baselines can act while the flag still measures format legality. Trained
+policies are run strict, matching what the RL framework's parser accepts.
 """
 
 from __future__ import annotations
 
 import json
 
+_DECODER = json.JSONDecoder()
+
 
 def _to_wire(message: dict) -> dict:
     if message.get("role") != "assistant":
         return message
-    out = {"role": "assistant", "content": message.get("content") or ""}
+    out = {"role": "assistant", "content": message.get("content") or ""}  # drops usage / truncated / lenient
     if message.get("tool_calls"):
         out["tool_calls"] = [
             {"id": c["id"], "type": "function",
@@ -27,7 +35,21 @@ def _to_wire(message: dict) -> dict:
     return out
 
 
-def _from_wire(choice, usage) -> dict:
+def _extract_call(text: str) -> dict | None:
+    """First JSON object in `text` shaped like {"name": ..., "arguments": {...}}."""
+    start = text.find("{")
+    while start != -1:
+        try:
+            obj, _ = _DECODER.raw_decode(text, start)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("name"), str) and isinstance(obj.get("arguments", {}), dict):
+            return {"id": "lenient", "function": {"name": obj["name"], "arguments": obj.get("arguments", {})}}
+        start = text.find("{", start + 1)
+    return None
+
+
+def _from_wire(choice, usage, lenient: bool) -> dict:
     msg = choice.message
     reply = {
         "role": "assistant",
@@ -44,14 +66,16 @@ def _from_wire(choice, usage) -> dict:
             continue  # unparseable arguments count as no call, i.e. a parse_error turn
         if isinstance(args, dict):
             calls.append({"id": c.id, "function": {"name": c.function.name, "arguments": args}})
+    if not calls and lenient and (found := _extract_call(reply["content"])):
+        calls, reply["lenient"] = [found], True
     if calls:
         reply["tool_calls"] = calls
     return reply
 
 
 class ChatPolicy:
-    def __init__(self, client, model: str, temperature: float, max_tokens: int):
-        self.client, self.model, self.temperature, self.max_tokens = client, model, temperature, max_tokens
+    def __init__(self, client, model: str, temperature: float, max_tokens: int, lenient: bool = False):
+        self.client, self.model, self.temperature, self.max_tokens, self.lenient = client, model, temperature, max_tokens, lenient
 
     def __call__(self, messages: list[dict], tools: list[dict]) -> dict:
         resp = self.client.chat.completions.create(
@@ -61,4 +85,4 @@ class ChatPolicy:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        return _from_wire(resp.choices[0], resp.usage)
+        return _from_wire(resp.choices[0], resp.usage, self.lenient)

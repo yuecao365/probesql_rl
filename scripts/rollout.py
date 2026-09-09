@@ -40,6 +40,7 @@ def main():
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--max-tokens", type=int, default=1024)
     ap.add_argument("--max-turns", type=int, default=10)
+    ap.add_argument("--lenient-tool-parse", action="store_true", help="accept bare-JSON tool calls (zero-shot baselines only)")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -55,7 +56,7 @@ def main():
     print(f"{len(jobs)} rollouts to run, {len(done)} already done")
 
     policy = ChatPolicy(OpenAI(base_url=args.base_url, api_key=args.api_key, max_retries=5),
-                        args.model, args.temperature, args.max_tokens)
+                        args.model, args.temperature, args.max_tokens, lenient=args.lenient_tool_parse)
     lock = threading.Lock()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 

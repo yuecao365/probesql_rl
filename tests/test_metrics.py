@@ -59,3 +59,10 @@ def test_tokens_status_and_difficulty():
 
 def test_missing_difficulty_is_grouped_as_all():
     assert summarize([rec("a", True, [], difficulty=None)])["pass@1_by_difficulty"] == {"all": 1.0}
+
+
+def test_lenient_call_ratio_counts_only_messages_with_calls():
+    r = rec("a", True, [])
+    r["messages"] = [{"role": "assistant", "tool_calls": [1], "lenient": True}, {"role": "assistant", "tool_calls": [1]},
+                     {"role": "assistant", "content": "no call"}, {"role": "tool"}]
+    assert summarize([r])["lenient_call_ratio"] == 0.5

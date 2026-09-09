@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from env.policy import ChatPolicy, _to_wire
+from env.policy import ChatPolicy, _extract_call, _to_wire
 
 
 class FakeClient:
@@ -67,3 +67,33 @@ def test_to_wire_serializes_arguments_and_drops_internal_fields():
 def test_to_wire_leaves_tool_and_user_messages_alone():
     tool = {"role": "tool", "tool_call_id": "c1", "content": "x"}
     assert _to_wire(tool) is tool
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ('{"name": "list_tables", "arguments": {}}', ("list_tables", {})),
+        ('{"name": "list_tables"}', ("list_tables", {})),
+        ('Let me look.\n```json\n{"name": "describe_table", "arguments": {"table": "a"}}\n```\nthen more', ("describe_table", {"table": "a"})),
+        ('{"name": "a", "arguments": {}} {"name": "b", "arguments": {}}', ("a", {})),
+        ('{"x": 1} {"name": "run_sql", "arguments": {"query": "SELECT \'{\' FROM t"}}', ("run_sql", {"query": "SELECT '{' FROM t"})),
+        ('{broken {"name": "ok", "arguments": {}}', ("ok", {})),
+    ],
+)
+def test_extract_call(text, expected):
+    call = _extract_call(text)
+    assert (call["function"]["name"], call["function"]["arguments"]) == expected and call["id"] == "lenient"
+
+
+@pytest.mark.parametrize("text", ["", "SELECT 1", '{"arguments": {}}', '{"name": 3}', '{"name": "x", "arguments": "s"}', "{"])
+def test_extract_call_rejects(text):
+    assert _extract_call(text) is None
+
+
+def test_lenient_only_when_server_found_nothing():
+    strict = ChatPolicy(FakeClient(_resp('{"name": "b"}', [_call("a", "{}")])), "m", 0, 1, lenient=True)([], [])
+    assert strict["tool_calls"][0]["function"]["name"] == "a" and "lenient" not in strict
+    fallback = ChatPolicy(FakeClient(_resp('{"name": "b"}', None)), "m", 0, 1, lenient=True)([], [])
+    assert fallback["tool_calls"][0]["function"]["name"] == "b" and fallback["lenient"] is True
+    off = ChatPolicy(FakeClient(_resp('{"name": "b"}', None)), "m", 0, 1)([], [])
+    assert "tool_calls" not in off
