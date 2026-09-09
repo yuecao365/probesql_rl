@@ -60,3 +60,28 @@ Same three runs, same seeds and prompts. The general Instruct model emits native
 Coder has the stronger SQL prior in the one-shot setting; Instruct is the stronger
 *agent*: it follows the tool protocol without help, recovers from errors 2.7× more often,
 and uses a third of the tokens. Both keep the mixed bucket well above the 20% GO line.
+
+## M2 · teacher sampling (2026-09-09)
+
+Teacher: DeepSeek v4-pro via API, thinking disabled, T=1.0, max 2048 tokens per reply,
+same environment and prompt as the student. Pilot on 10 questions × 4 chose it over
+v4-flash (pass@1 52.5 vs 42.5, 0% vs 7.5% hallucinated columns, half the tokens).
+Two protocol fixes came out of the pilot: DeepSeek's default thinking mode ate the
+1024-token reply budget, and replies batching several tool calls were only executed
+one call at a time; the environment now runs every call in a reply, in order.
+
+Main run: 600 SFT-split questions × 6 rollouts.
+
+| | value |
+|---|---|
+| trajectories | 3600 (55 questions have a gold that fails to execute → 320 gold_error rows) |
+| teacher pass@1 / pass^6 | 57.1% / 45.6% on the 545 usable questions |
+| accepted by the four-way filter | 1783 (49.5%) |
+| rejected: wrong / not submitted / tool error / duplicate | 1220 / 187 / 79 / 11 |
+| questions with ≥1 accepted trajectory | 359 / 545 |
+| avg replies / calls / completion tokens | 5.2 / 8.3 / 590 |
+| hallucinated column or table | 1.9% |
+| cost | 45 CNY (≈0.0125 CNY per rollout) |
+
+SFT set after keeping the 2 shortest clean trajectories per question: **675 examples**.
+A second pass over the 187 uncovered questions (× 6) follows.
