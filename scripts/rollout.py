@@ -32,6 +32,7 @@ def main():
     ap.add_argument("--db-dir", required=True)
     ap.add_argument("--spider", action="store_true")
     ap.add_argument("--n", type=int, help="questions to sample; default all")
+    ap.add_argument("--ids", help="file with one question id per line; overrides --n")
     ap.add_argument("--g", type=int, default=1, help="rollouts per question")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--base-url", required=True)
@@ -46,7 +47,11 @@ def main():
     args = ap.parse_args()
 
     examples = (load_spider if args.spider else load_bird)(args.json, args.db_dir)
-    if args.n:
+    if args.ids:
+        with open(args.ids) as f:
+            wanted = {line.strip() for line in f if line.strip()}
+        examples = [e for e in examples if e.id in wanted]
+    elif args.n:
         examples = random.Random(args.seed).sample(examples, args.n)
     done = set()
     if os.path.exists(args.out):
