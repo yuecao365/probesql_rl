@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace as NS
 
+import httpx
+import openai
 import pytest
 
 from env.policy import ChatPolicy, _extract_call, _to_wire
@@ -97,3 +99,19 @@ def test_lenient_only_when_server_found_nothing():
     assert fallback["tool_calls"][0]["function"]["name"] == "b" and fallback["lenient"] is True
     off = ChatPolicy(FakeClient(_resp('{"name": "b"}', None)), "m", 0, 1)([], [])
     assert "tool_calls" not in off
+
+
+class RaisingClient:
+    def __init__(self, message):
+        resp = httpx.Response(400, request=httpx.Request("POST", "http://x"), json={"error": {"message": message}})
+        self.chat = NS(completions=NS(create=lambda **kw: (_ for _ in ()).throw(openai.BadRequestError(message, response=resp, body=None))))
+
+
+def test_context_overflow_becomes_truncated_reply():
+    reply = ChatPolicy(RaisingClient("This model's maximum context length is 16384 tokens"), "m", 0, 1)([], [])
+    assert reply["truncated"] is True and "tool_calls" not in reply
+
+
+def test_other_bad_requests_still_raise():
+    with pytest.raises(openai.BadRequestError):
+        ChatPolicy(RaisingClient("invalid model"), "m", 0, 1)([], [])

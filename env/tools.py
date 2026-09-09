@@ -23,6 +23,7 @@ RESULT_ROWS = 10_000  # rows kept for reward computation
 GOLD_TIMEOUT_S = 30.0  # gold queries get the official judge's budget, not the policy's 5 s
 MAX_SAMPLE_ROWS = 5
 MAX_CELL_CHARS = 64
+MAX_OBS_CHARS = 2000  # ~600 tokens; keeps a 10-turn episode inside the context budget
 TIMEOUT_S = 5.0
 
 PROBES = ("list_tables", "describe_table", "sample_rows", "search_column")
@@ -50,6 +51,12 @@ def _cell(v) -> str:
     return s if len(s) <= MAX_CELL_CHARS else s[: MAX_CELL_CHARS - 1] + "…"
 
 
+def clip(text: str) -> str:
+    if len(text) <= MAX_OBS_CHARS:
+        return text
+    return text[:MAX_OBS_CHARS] + "\n... (observation truncated)"
+
+
 def render(result: db.Result, max_rows: int = MAX_ROWS) -> str:
     if not result.rows:
         return "(empty result)"
@@ -58,7 +65,7 @@ def render(result: db.Result, max_rows: int = MAX_ROWS) -> str:
     lines += [" | ".join(_cell(c) for c in row) for row in shown]
     if result.truncated or len(result.rows) > max_rows:
         lines.append(f"... (showing first {len(shown)} rows, more exist)")
-    return "\n".join(lines)
+    return clip("\n".join(lines))
 
 
 class Toolbox:
@@ -70,7 +77,7 @@ class Toolbox:
         if name not in PROBES:
             return f"Error: unknown tool '{name}'"
         try:
-            return getattr(self, name)(**args)
+            return clip(getattr(self, name)(**args))
         except TypeError as e:
             return f"Error: bad arguments for {name}: {e}"
 

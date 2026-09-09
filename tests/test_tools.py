@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from env import db
-from env.tools import MAX_CELL_CHARS, MAX_ROWS, MAX_SAMPLE_ROWS, SPECS, Toolbox, render
+from env.tools import MAX_CELL_CHARS, MAX_OBS_CHARS, MAX_ROWS, MAX_SAMPLE_ROWS, SPECS, Toolbox, clip, render
 
 
 @pytest.fixture
@@ -103,3 +103,20 @@ def test_execute_timeout(box, monkeypatch):
 
 def test_render_empty_columns_only():
     assert render(db.Result(("a",), [], False)) == "(empty result)"
+
+
+def test_clip_boundary():
+    assert clip("x" * MAX_OBS_CHARS) == "x" * MAX_OBS_CHARS
+    out = clip("x" * (MAX_OBS_CHARS + 1))
+    assert out.startswith("x" * MAX_OBS_CHARS) and out.endswith("(observation truncated)")
+
+
+def test_wide_observations_are_clipped(tmp_path):
+    path = tmp_path / "w.sqlite"
+    cols = ", ".join(f"c{i} TEXT" for i in range(200))
+    with sqlite3.connect(path) as c:
+        c.execute(f"CREATE TABLE wide ({cols})")
+        c.execute("INSERT INTO wide VALUES (" + ", ".join(["'v'"] * 200) + ")")
+    box = Toolbox(db.connect(str(path)))
+    assert len(box.call("describe_table", {"table": "wide"})) <= MAX_OBS_CHARS + 30
+    assert render(box.execute("SELECT * FROM wide")).endswith("(observation truncated)")

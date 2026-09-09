@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 
+import openai
+
 _DECODER = json.JSONDecoder()
 
 
@@ -78,11 +80,17 @@ class ChatPolicy:
         self.client, self.model, self.temperature, self.max_tokens, self.lenient = client, model, temperature, max_tokens, lenient
 
     def __call__(self, messages: list[dict], tools: list[dict]) -> dict:
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=[_to_wire(m) for m in messages],
-            tools=[{"type": "function", "function": t} for t in tools],
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-        )
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[_to_wire(m) for m in messages],
+                tools=[{"type": "function", "function": t} for t in tools],
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+        except openai.BadRequestError as e:
+            if "context length" not in str(e):
+                raise
+            # The episode outgrew the model's window: end it as a truncation, not a crash.
+            return {"role": "assistant", "content": "", "truncated": True, "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
         return _from_wire(resp.choices[0], resp.usage, self.lenient)
