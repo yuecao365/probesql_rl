@@ -6,7 +6,7 @@ formats and join keys through tools before it can write SQL. Training compares
 outcome-only GRPO against verifiable per-turn process rewards and several turn-level
 credit-assignment schemes, on BIRD with Spider held out for out-of-distribution evaluation.
 
-Status: **M0 (environment + evaluation)**. Nothing has been trained yet.
+Status: **M1 done, M2 (teacher sampling + SFT cold start) in progress**. Zero-shot baselines are in [docs/results.md](docs/results.md).
 
 ## Environment
 
@@ -47,7 +47,9 @@ These are fixed at the end of M0 and will not change mid-project, so numbers sta
 ```
 env/        db.py sandbox · compare.py judge + overlap · verifier.py · tools.py · prompt.py · rollout.py · tasks.py · policy.py
 eval/       bird_official.py (verbatim leaderboard judge) · consistency.py · metrics.py
-scripts/    serve_vllm.sh · rollout.py · single_turn.py · metrics.py · check_consistency.py
+sft/        data.py (rejection filter + chat-template encoding with loss mask) · train.py (LoRA) · merge.py
+scripts/    serve_vllm.sh · rollout.py · single_turn.py · metrics.py · m1.sh · build_sft.py · dump_mask.py · audit_sample.py · check_consistency.py
+docs/       results.md (every number reported so far) · theory notes
 tests/      pytest, edge cases only
 data/ models/ ckpt/   symlinks to the data disk (git-ignored)
 docs/       notes, incl. the Agentic RL theory write-up
@@ -65,7 +67,15 @@ python scripts/metrics.py outputs/dev300_agent.jsonl
 ```
 
 Any OpenAI-compatible endpoint works as the policy, so the same rollout code
-drives the local student and the API teacher.
+drives the local student and the API teacher. SFT data is the teacher's accepted
+trajectories rendered through the student's own chat template:
+
+```
+python scripts/build_sft.py outputs/teacher_train.jsonl --per-question 2 --out data/sft/teacher.jsonl
+python scripts/dump_mask.py data/sft/teacher.jsonl --model models/Qwen2.5-7B-Instruct --index 0   # eyeball the loss mask
+python sft/train.py --model models/Qwen2.5-7B-Instruct --data data/sft/teacher.jsonl --out ckpt/sft_r32
+python sft/merge.py --base models/Qwen2.5-7B-Instruct --adapter ckpt/sft_r32 --out models/qwen7b-sft
+```
 
 ## Notes
 

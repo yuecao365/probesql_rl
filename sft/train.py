@@ -71,8 +71,8 @@ def main():
         args=TrainingArguments(
             output_dir=args.out, num_train_epochs=args.epochs, max_steps=args.max_steps, learning_rate=args.lr,
             per_device_train_batch_size=1, gradient_accumulation_steps=args.batch,
-            lr_scheduler_type="cosine", warmup_ratio=0.03, bf16=True, logging_steps=5,
-            save_strategy="epoch", report_to=[], remove_unused_columns=False, group_by_length=True,
+            lr_scheduler_type="cosine", warmup_steps=0.03, bf16=True, logging_steps=5,
+            save_strategy="epoch", report_to=[], remove_unused_columns=False,
         ),
         train_dataset=examples,
         data_collator=Collator(tok.pad_token_id),

@@ -59,7 +59,8 @@ def test_mask_covers_only_assistant_text(tok):
     assert len(ids) == len(labels)
     on = tok.decode([t for t, l in zip(ids, labels) if l != IGNORE])
     off = tok.decode([t for t, l in zip(ids, labels) if l == IGNORE])
-    assert "Let me look." in on and "SELECT id FROM t" in on and "<tool_call>" in on
+    assert "Let me look." in on and "<tool_call>" in on
+    assert '"arguments": {"query": "SELECT id FROM t"}' in on  # an object, never an escaped string
     assert on.count("<|im_end|>") == 2 and "<|im_start|>" not in on
     assert "SECRET_OBSERVATION" not in on and "SECRET_OBSERVATION" in off
     assert "sys" in off and "Question: q" in off and "describe_table" in off  # tool spec + user turn are context
