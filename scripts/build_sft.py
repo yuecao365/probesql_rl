@@ -3,13 +3,14 @@
     python scripts/build_sft.py outputs/teacher_train.jsonl --per-question 2 --out data/sft/teacher.jsonl
 
 Keeps trajectories that pass sft.data.reject_reason, at most --per-question
-distinct ones per question, and prints the rejection breakdown, which doubles as
-the teacher's pass rate on this environment.
+distinct ones per question, preferring the shortest: among equally correct and
+clean trajectories the one with fewer turns shows the most purposeful probing,
+and that is the behaviour worth imitating. Prints the rejection breakdown,
+which doubles as the teacher's pass rate on this environment.
 """
 
 import argparse
 import json
-import random
 import sys
 from collections import Counter, defaultdict
 
@@ -22,7 +23,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("files", nargs="+")
     ap.add_argument("--per-question", type=int, default=2)
-    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -37,11 +37,12 @@ def main():
                 if reason is None:
                     kept[r["id"]].append(r)
 
-    rng = random.Random(args.seed)
     out_rows = []
     for qid, rows in kept.items():
-        distinct = {r["final_sql"]: r for r in rows}.values()  # same final SQL twice teaches nothing new
-        out_rows += [{"id": qid, "k": r["k"], "messages": r["messages"]} for r in rng.sample(list(distinct), min(args.per_question, len(distinct)))]
+        shortest_first = sorted(rows, key=lambda r: (len(r["steps"]), r["k"]))
+        distinct = list({r["final_sql"]: r for r in reversed(shortest_first)}.values())  # keep the shortest per final SQL
+        distinct.sort(key=lambda r: (len(r["steps"]), r["k"]))
+        out_rows += [{"id": qid, "k": r["k"], "messages": r["messages"]} for r in distinct[: args.per_question]]
     with open(args.out, "w") as f:
         for r in out_rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
