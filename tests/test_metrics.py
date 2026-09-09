@@ -36,7 +36,8 @@ def test_first_sql_and_recovery_ignore_probe_turns_and_trajectories_without_sql(
     assert s["first_sql_acc"] == pytest.approx(1 / 3)
     assert s["recovery_rate"] == pytest.approx(1 / 2)
     assert s["probe_turn_ratio"] == pytest.approx(2 / 7)
-    assert s["avg_turns"] == pytest.approx(7 / 4)
+    assert s["avg_calls"] == pytest.approx(7 / 4)
+    assert s["avg_turns"] == 1.0  # every synthetic record has exactly one assistant message
 
 
 def test_hallucination_duplicate_degenerate_idle_are_per_trajectory():
