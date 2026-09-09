@@ -87,7 +87,7 @@ SFT set after keeping the 2 shortest clean trajectories per question: **675 exam
 A second pass over the 187 uncovered questions (× 6) follows.
 
 Second pass, 187 uncovered questions × 6: only 13 more questions solved (1.8% of rollouts),
-9 CNY. Final SFT set: **693 examples from 372 questions**, 4.2 replies on average. The 174
+9 CNY. Final SFT set: **693 examples from 372 questions**, 4.2 replies on average. The 179
 questions the teacher never solved in 12 attempts are saved as `outputs/teacher_unsolved_ids.txt`
 for the label audit (D3): a teacher at 57% pass@1 failing 12/12 is a strong hint the gold or the
 question is the problem, not the model.
