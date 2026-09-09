@@ -115,3 +115,9 @@ def test_context_overflow_becomes_truncated_reply():
 def test_other_bad_requests_still_raise():
     with pytest.raises(openai.BadRequestError):
         ChatPolicy(RaisingClient("invalid model"), "m", 0, 1)([], [])
+
+
+def test_extra_body_is_forwarded():
+    client = FakeClient(_resp("", [_call("list_tables", "{}")]))
+    ChatPolicy(client, "m", 0, 1, extra_body={"thinking": {"type": "disabled"}})([], [])
+    assert client.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}

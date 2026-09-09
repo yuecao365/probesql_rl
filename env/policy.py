@@ -76,8 +76,9 @@ def _from_wire(choice, usage, lenient: bool) -> dict:
 
 
 class ChatPolicy:
-    def __init__(self, client, model: str, temperature: float, max_tokens: int, lenient: bool = False):
+    def __init__(self, client, model: str, temperature: float, max_tokens: int, lenient: bool = False, extra_body: dict | None = None):
         self.client, self.model, self.temperature, self.max_tokens, self.lenient = client, model, temperature, max_tokens, lenient
+        self.extra_body = extra_body or {}  # provider-specific knobs, e.g. DeepSeek's {"thinking": {"type": "disabled"}}
 
     def __call__(self, messages: list[dict], tools: list[dict]) -> dict:
         try:
@@ -87,6 +88,7 @@ class ChatPolicy:
                 tools=[{"type": "function", "function": t} for t in tools],
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                extra_body=self.extra_body,
             )
         except openai.BadRequestError as e:
             if "context length" not in str(e):

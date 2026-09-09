@@ -9,7 +9,10 @@ stored on each Step so reward weighting can change without re-running anything.
 
 An episode ends on `submit`, on a reply without a tool call (parse_error), on a
 truncated generation, or when the turn budget runs out. Those four statuses
-are the anomaly counters the training dashboard needs.
+are the anomaly counters the training dashboard needs. A reply may carry
+several tool calls; they run in order, each gets its own tool message, and a
+`submit` ends the episode as soon as it is reached. A turn is one reply, so
+turn-level credit is unaffected by how many probes a reply batches.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ Policy = Callable[[list[dict], list[dict]], dict]
 
 @dataclass
 class Step:
+    turn: int  # index of the assistant reply this call came from
     tool: str
     args: dict
     observation: str
@@ -54,7 +58,7 @@ def run(task: prompt.Task, conn: sqlite3.Connection, policy: Policy, max_turns: 
     traj = Trajectory(prompt.build_messages(task, box.tables(), max_turns))
     tracker = verifier.Tracker()
 
-    for _ in range(max_turns):
+    for turn in range(max_turns):
         reply = policy(traj.messages, SPECS)
         traj.messages.append(reply)
         if reply.get("truncated"):
@@ -64,30 +68,30 @@ def run(task: prompt.Task, conn: sqlite3.Connection, policy: Policy, max_turns: 
         if not calls:
             traj.status = "parse_error"
             return traj
-        call = calls[0]
-        name, args = call["function"]["name"], call["function"]["arguments"]
 
-        if name in ("run_sql", "submit"):
-            query = str(args.get("query", ""))
-            try:
-                result = box.execute(query)
-                observation, ok, rows = render(result), True, result.rows
-            except db.DbError as e:
-                observation, ok, rows = f"Error: {e}", False, []
-            step = Step(name, args, observation, ok, tracker.record(name, args, ok), tracker.idle_streak,
-                        degenerate=verifier.is_degenerate(query),
-                        overlap=compare.overlap(rows, gold_rows) if gold_rows is not None else None)
-        else:
-            observation = box.call(name, args)
-            ok = not observation.startswith("Error")
-            step = Step(name, args, observation, ok, tracker.record(name, args, ok), tracker.idle_streak)
-        traj.steps.append(step)
+        for call in calls:
+            name, args = call["function"]["name"], call["function"]["arguments"]
+            if name in ("run_sql", "submit"):
+                query = str(args.get("query", ""))
+                try:
+                    result = box.execute(query)
+                    observation, ok, rows = render(result), True, result.rows
+                except db.DbError as e:
+                    observation, ok, rows = f"Error: {e}", False, []
+                step = Step(turn, name, args, observation, ok, tracker.record(name, args, ok), tracker.idle_streak,
+                            degenerate=verifier.is_degenerate(query),
+                            overlap=compare.overlap(rows, gold_rows) if gold_rows is not None else None)
+            else:
+                observation = box.call(name, args)
+                ok = not observation.startswith("Error")
+                step = Step(turn, name, args, observation, ok, tracker.record(name, args, ok), tracker.idle_streak)
+            traj.steps.append(step)
 
-        if name == "submit":
-            traj.status = "submitted"
-            traj.final_sql = query
-            if gold_rows is not None:
-                traj.correct = ok and compare.equal(rows, gold_rows)
-            return traj
-        traj.messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": observation})
+            if name == "submit":
+                traj.status = "submitted"
+                traj.final_sql = query
+                if gold_rows is not None:
+                    traj.correct = ok and compare.equal(rows, gold_rows)
+                return traj
+            traj.messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": observation})
     return traj

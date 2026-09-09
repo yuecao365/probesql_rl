@@ -94,11 +94,29 @@ def test_unknown_tool_is_an_error_observation_not_a_crash(conn):
     assert traj.steps[0].ok is False and traj.steps[0].observation.startswith("Error: unknown tool")
 
 
-def test_only_first_tool_call_is_used(conn):
+def test_batched_calls_run_in_order_within_one_turn(conn):
     reply = call("list_tables")
-    reply["tool_calls"].append(call("submit", query="SELECT 1")["tool_calls"][0])
-    traj = run(TASK, conn, scripted(reply, call("submit", query="SELECT 1")), max_turns=5)
-    assert [s.tool for s in traj.steps] == ["list_tables", "submit"]
+    reply["tool_calls"].append(call("describe_table", table="t")["tool_calls"][0])
+    traj = run(TASK, conn, scripted(reply, call("submit", query="SELECT id FROM t WHERE v >= 20")), max_turns=2)
+    assert [(s.turn, s.tool) for s in traj.steps] == [(0, "list_tables"), (0, "describe_table"), (1, "submit")]
+    tool_msgs = [m for m in traj.messages if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c-list_tables", "c-describe_table"]
+    assert traj.status == "submitted" and traj.correct is True
+
+
+def test_submit_inside_a_batch_ends_the_episode_immediately(conn):
+    reply = call("submit", query="SELECT id FROM t WHERE v >= 20")
+    reply["tool_calls"].append(call("list_tables")["tool_calls"][0])
+    traj = run(TASK, conn, scripted(reply), max_turns=5)
+    assert [s.tool for s in traj.steps] == ["submit"] and traj.correct is True
+    assert not [m for m in traj.messages if m["role"] == "tool"]
+
+
+def test_turn_budget_counts_replies_not_calls(conn):
+    reply = call("list_tables")
+    reply["tool_calls"].append(call("describe_table", table="t")["tool_calls"][0])
+    traj = run(TASK, conn, scripted(reply, reply), max_turns=2)
+    assert traj.status == "max_turns" and len(traj.steps) == 4
 
 
 def test_broken_gold_raises_before_any_turn(conn):

@@ -7,7 +7,7 @@ def test_initial_state_has_tables_but_no_columns():
     assert "Tables: t, u" in msgs[1]["content"]
     assert "Hint" not in msgs[1]["content"]
     assert "count(*)" not in msgs[0]["content"] + msgs[1]["content"]
-    assert "at most 10 tool calls" in msgs[0]["content"]
+    assert "most 10 replies" in msgs[0]["content"]
 
 
 def test_evidence_included_when_present():

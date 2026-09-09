@@ -16,9 +16,10 @@ from dataclasses import dataclass
 SYSTEM = """You are an expert SQL analyst working on an unfamiliar SQLite database.
 You know only the table names. Before writing SQL, explore the schema with the
 tools: describe the tables you need, sample real rows to learn value formats,
-and run candidate queries to check their results. Each reply must contain
-exactly one tool call. When you are confident, call `submit` with the final
-SQL; that ends the task. You have at most {max_turns} tool calls in total."""
+and run candidate queries to check their results. Every reply must call at
+least one tool; independent probes may be batched in one reply. When you are
+confident, call `submit` with the final SQL; that ends the task. You have at
+most {max_turns} replies in total."""
 
 
 @dataclass(frozen=True)
