@@ -93,3 +93,19 @@ def test_every_learned_span_is_one_assistant_turn(tok):
             i += 1
     assert len(spans) == 2                                  # two assistant turns
     assert all(ids[e - 1] == im_end for _, e in spans)      # each closes on <|im_end|>
+
+
+def test_think_block_is_prompt_not_generation(tok):
+    """Served with enable_thinking=False, `<think>\n\n</think>` is prefilled into the
+    prompt, so it must never be learned -- and every turn must carry it, or turns are
+    conditioned on a prefix the model never saw at rollout time."""
+    ex = encode(tok, MESSAGES, TOOLS, max_len=4096)
+    ids, labels = ex["input_ids"], ex["labels"]
+    text = tok.decode(ids)
+    if "<think>" not in text:
+        pytest.skip("not a thinking-style template")
+    on = tok.decode([t for t, l in zip(ids, labels) if l != IGNORE])
+    assert "<think>" not in on and "</think>" not in on
+    # one think block per assistant turn, none left bare
+    assert text.count("<think>") == text.count("<|im_start|>assistant")
+    assert "<|im_start|>assistant\n<tool_call>" not in text

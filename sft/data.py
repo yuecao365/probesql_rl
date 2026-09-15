@@ -6,7 +6,7 @@ serving side renders back into its context, so the student trains on exactly
 what it will see at rollout time.
 
 The mask is found by scanning the rendered token stream for ChatML turn
-boundaries: everything between a `<|im_start|>assistant\n` marker and the
+boundaries: everything between the start of a turn's generation and the
 `<|im_end|>` that closes it is the model's own, and everything else (system,
 user, tool results, template scaffolding) is masked out of the loss. An earlier
 version derived the spans from prefix lengths instead -- render `messages[:i]`
@@ -17,6 +17,17 @@ render is not a prefix of the full render and every span came out misaligned,
 silently leaking tool output into the loss. Scanning the final stream cannot
 drift from it.
 
+Qwen3 needs one normalization first. Served with `enable_thinking=False` -- which
+is what makes it call tools at all, and what MUA-RL's numbers refer to -- the
+generation prompt ends `<|im_start|>assistant\n<think>\n\n</think>\n\n`, so the
+empty think block is *prompt*, prefilled by the template, not something the model
+produced. But rendering a finished trajectory puts that block on the last assistant
+turn only and drops it from the earlier ones. Left alone, training would learn to
+emit the block on one turn and condition every other turn on a prefix the model
+never actually saw. So every assistant turn gets the block inserted and masked,
+which makes each turn byte-identical to what the serving side built when that turn
+was generated.
+
 Tool schemas are a parameter rather than an import: the environment owns them,
 and this module has to encode whatever environment is in play. The acceptance
 filter that decides which trajectories are worth encoding is likewise the
@@ -26,6 +37,8 @@ environment's business and lives next to it.
 from __future__ import annotations
 
 IGNORE = -100
+OPENER = "<|im_start|>assistant\n"
+THINK = "<think>\n\n</think>\n\n"  # what enable_thinking=False prefills; prompt, not generation
 
 
 def as_tools(specs: list[dict]) -> list[dict]:
@@ -42,7 +55,10 @@ def _template_message(m: dict) -> dict:
 
 
 def _render(tokenizer, messages, tools) -> list[int]:
+    """Render, then give every assistant turn the think block the template prefills."""
     text = tokenizer.apply_chat_template(messages, tools=tools, tokenize=False, add_generation_prompt=False)
+    if THINK in text:  # a thinking-style template; normalize every turn to carry the block
+        text = text.replace(OPENER + THINK, OPENER).replace(OPENER, OPENER + THINK)
     return tokenizer.encode(text, add_special_tokens=False)
 
 
@@ -55,12 +71,19 @@ def _find(haystack: list[int], needle: list[int], start: int) -> int:
 
 
 def assistant_spans(tokenizer, ids: list[int]) -> list[tuple[int, int]]:
-    """[start, end) of every assistant turn, `<|im_end|>` included: the model emitted it."""
-    opener = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
+    """[start, end) of every assistant turn, `<|im_end|>` included: the model emitted it.
+
+    The span opens after any prefilled think block, which the serving side puts in the
+    prompt rather than asking the model for.
+    """
+    opener = tokenizer.encode(OPENER, add_special_tokens=False)
+    think = tokenizer.encode(THINK, add_special_tokens=False)
     closer = tokenizer.convert_tokens_to_ids("<|im_end|>")
     spans, at = [], 0
     while (i := _find(ids, opener, at)) != -1:
         start = i + len(opener)
+        if ids[start : start + len(think)] == think:
+            start += len(think)
         end = next((j for j in range(start, len(ids)) if ids[j] == closer), len(ids) - 1)
         spans.append((start, end + 1))
         at = end + 1

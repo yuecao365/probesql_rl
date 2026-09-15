@@ -53,8 +53,12 @@ setup_tau2() {
   mkdir -p "$DATA"
   if [ ! -d "$DATA/tau2-bench" ]; then
     # git clone over the SSH tunnel dies on sideband packets; a single HTTP GET does not.
-    curl -sSL --retry 5 --retry-all-errors -o "$DATA/tau2.tar.gz" \
+    # --speed-limit/--speed-time abort a stalled transfer so --retry can act on it;
+    # without them a dead connection hangs the script indefinitely rather than retrying.
+    curl -sSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 60 \
+      -o "$DATA/tau2.tar.gz" \
       "$GH/https://github.com/sierra-research/tau2-bench/archive/refs/heads/main.tar.gz"
+    tar tzf "$DATA/tau2.tar.gz" >/dev/null || { echo "tarball incomplete"; exit 1; }
     tar xzf "$DATA/tau2.tar.gz" -C "$DATA"
     mv "$DATA/tau2-bench-main" "$DATA/tau2-bench"
     rm -f "$DATA/tau2.tar.gz"
