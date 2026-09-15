@@ -5,9 +5,10 @@ phone's connectivity fault by reading a policy manual, calling backend tools, an
 simulated user through steps it cannot perform itself*. Training compares outcome-only GRPO
 against verifiable per-turn process rewards and three turn-level credit-assignment schemes.
 
-Status: **migrating from a BIRD text-to-SQL setting** (see [docs/results.md](docs/results.md) for
-everything that setting produced; the code is on the `sql-env` tag). The migration is gated on
-one pilot — see [docs/pilot_tau2.md](docs/pilot_tau2.md).
+Status: **starting on this environment.** The project previously ran a BIRD text-to-SQL setting
+with a hidden schema; that setting turned out to make exploration mechanical rather than a real
+decision, and it is retired on the `sql-env` tag. First step here is one pilot —
+see [docs/pilot_tau2.md](docs/pilot_tau2.md).
 
 ## Why this environment
 
@@ -80,7 +81,7 @@ budget holds. Qwen3-8B with LoRA co-located with vLLM comes to roughly 61 GB of 
 ```
 sft/        data.py (chat-template encoding with a per-token loss mask) · train.py (LoRA) · merge.py
 scripts/    tau2_pilot.sh · tau2_buckets.py (GO/NO-GO) · dump_mask.py · serve_vllm.sh
-docs/       pilot_tau2.md (frozen protocol) · results.md (the SQL setting's record) · theory notes
+docs/       pilot_tau2.md (frozen protocol) · theory.html (Agentic RL notes)
 tests/      pytest, edge cases only
 ```
 

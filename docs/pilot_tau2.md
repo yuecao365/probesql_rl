@@ -5,8 +5,7 @@ run comes back ambiguous the answer is NO-GO, not a new threshold.
 
 ## Why this pilot exists
 
-The project is considering moving off the hidden-schema BIRD environment (see
-`docs/results.md` and the scenario diagnosis) onto τ²-bench. Everything else about that
+The project moved off a hidden-schema BIRD environment onto τ²-bench. Everything else about that
 move is favourable — official Gymnasium RL interface, a few hundred MB on disk, user
 simulator can run on an API so the GPU stays free, and genuinely heterogeneous turn roles.
 One thing was unverified: whether a model this size produces a usable gradient there.
@@ -53,12 +52,9 @@ Secondary, recorded but not gating:
 
 - **GO** → proceed. The SQL environment is already archived on the `sql-env` tag; redo
   M1/M2 on telecom: zero-shot baselines, teacher rejection sampling, LoRA SFT.
-- **NO-GO** → stay on BIRD and instead drop the hidden-schema constraint: show the full
-  schema, keep the tools for value grounding (`sample_rows`) and the execute-inspect-revise
-  loop. That version answers the "unnatural setting" objection without a migration, and
-  M1 already has its baseline (full-schema single-turn 40.7).
-
-Either way the SQL code is kept.
+- **NO-GO** → the wiring is wrong, not the domain: MUA-RL's published 19.1 zero-shot says a
+  model this size scores here. Debug the agent endpoint, the action protocol and the task
+  sampling before concluding anything about τ²-bench.
 
 ## Cost
 
