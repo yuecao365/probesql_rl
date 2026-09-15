@@ -1,39 +1,27 @@
 """Turn rollout trajectories into SFT examples with a per-token loss mask.
 
-Acceptance is the plan's four-way rejection sampling: correct final answer,
-normal termination, no failed tool call, no repeated call (and no call that
-needed the lenient parser). Encoding runs the trajectory through the model's
-own chat template with tool arguments as JSON objects, which is what the model
-emits natively and what the serving side renders back into its context, so the
-student trains on exactly what it will see at rollout time. The mask is found
-by rendering each prefix: tokens between "prefix + generation prompt" and
-"prefix + assistant turn" are the model's own, everything else (system, user,
-tool results, template scaffolding) is masked out of the loss.
+Encoding runs a trajectory through the model's own chat template with tool
+arguments as JSON objects, which is what the model emits natively and what the
+serving side renders back into its context, so the student trains on exactly
+what it will see at rollout time. The mask is found by rendering each prefix:
+tokens between "prefix + generation prompt" and "prefix + assistant turn" are
+the model's own, everything else (system, user, tool results, template
+scaffolding) is masked out of the loss.
+
+Tool schemas are a parameter rather than an import: the environment owns them,
+and this module has to encode whatever environment is in play. The acceptance
+filter that decides which trajectories are worth encoding is likewise the
+environment's business and lives next to it.
 """
 
 from __future__ import annotations
 
-from env.tools import MAX_CALLS_PER_REPLY, SPECS
-
-TOOLS = [{"type": "function", "function": t} for t in SPECS]
 IGNORE = -100
 
 
-def reject_reason(record: dict) -> str | None:
-    """Why a trajectory is unfit for SFT, or None if it passes all four checks."""
-    if record["status"] != "submitted":
-        return "not_submitted"
-    if not record["correct"]:
-        return "wrong"
-    if any(not s["ok"] for s in record["steps"]):
-        return "tool_error"
-    if any(s["duplicate"] for s in record["steps"]):
-        return "duplicate_call"
-    if any(m.get("lenient") for m in record["messages"]):
-        return "lenient_format"
-    if any(len(m.get("tool_calls") or []) > MAX_CALLS_PER_REPLY for m in record["messages"]):
-        return "too_many_calls"
-    return None
+def as_tools(specs: list[dict]) -> list[dict]:
+    """Wrap bare function schemas in the `{"type": "function"}` envelope templates expect."""
+    return [{"type": "function", "function": s} for s in specs]
 
 
 def _template_message(m: dict) -> dict:
@@ -44,15 +32,15 @@ def _template_message(m: dict) -> dict:
     return out
 
 
-def _tokens(tokenizer, messages, add_generation_prompt: bool) -> list[int]:
-    text = tokenizer.apply_chat_template(messages, tools=TOOLS, tokenize=False, add_generation_prompt=add_generation_prompt)
+def _tokens(tokenizer, messages, tools, add_generation_prompt: bool) -> list[int]:
+    text = tokenizer.apply_chat_template(messages, tools=tools, tokenize=False, add_generation_prompt=add_generation_prompt)
     return tokenizer.encode(text, add_special_tokens=False)
 
 
-def encode(tokenizer, messages: list[dict], max_len: int) -> dict | None:
+def encode(tokenizer, messages: list[dict], tools: list[dict], max_len: int) -> dict | None:
     """input_ids + labels (IGNORE outside assistant turns), or None if too long."""
     wire = [_template_message(m) for m in messages]
-    ids = _tokens(tokenizer, wire, add_generation_prompt=False)
+    ids = _tokens(tokenizer, wire, tools, add_generation_prompt=False)
     if len(ids) > max_len:
         return None
     labels = [IGNORE] * len(ids)
@@ -60,8 +48,8 @@ def encode(tokenizer, messages: list[dict], max_len: int) -> dict | None:
     for i, m in enumerate(wire):
         if m["role"] != "assistant":
             continue
-        start = len(_tokens(tokenizer, wire[:i], add_generation_prompt=True))
-        end = len(_tokens(tokenizer, wire[: i + 1], add_generation_prompt=False))
+        start = len(_tokens(tokenizer, wire[:i], tools, add_generation_prompt=True))
+        end = len(_tokens(tokenizer, wire[: i + 1], tools, add_generation_prompt=False))
         # The template closes a turn with <|im_end|>\n; the model chose <|im_end|>, not the newline.
         if ids[end - len(newline) : end] == newline:
             end -= len(newline)

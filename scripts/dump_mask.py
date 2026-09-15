@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 
 sys.path.insert(0, ".")
 
-from sft.data import IGNORE, encode  # noqa: E402
+from sft.data import IGNORE, as_tools, encode  # noqa: E402
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.model)
     with open(args.data) as f:
         record = json.loads(f.readlines()[args.index])
-    ex = encode(tok, record["messages"], args.max_len)
+    ex = encode(tok, record["messages"], as_tools(record["tools"]), args.max_len)
     ids, labels = ex["input_ids"], ex["labels"]
 
     segments, current, learned = [], [], None

@@ -19,7 +19,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingA
 
 sys.path.insert(0, ".")
 
-from sft.data import IGNORE, encode  # noqa: E402
+from sft.data import IGNORE, as_tools, encode  # noqa: E402
 
 LINEAR_LAYERS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
@@ -55,7 +55,7 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.model)
     with open(args.data) as f:
         raw = [json.loads(line) for line in f]
-    examples = [ex for ex in (encode(tok, r["messages"], args.max_len) for r in raw) if ex]
+    examples = [ex for ex in (encode(tok, r["messages"], as_tools(r["tools"]), args.max_len) for r in raw) if ex]
     learned = sum(sum(l != IGNORE for l in ex["labels"]) for ex in examples)
     total = sum(len(ex["input_ids"]) for ex in examples)
     print(f"{len(examples)}/{len(raw)} examples within {args.max_len} tokens; {learned}/{total} tokens in the loss ({learned / total:.1%})")

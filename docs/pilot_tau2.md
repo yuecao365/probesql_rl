@@ -9,9 +9,11 @@ The project is considering moving off the hidden-schema BIRD environment (see
 `docs/results.md` and the scenario diagnosis) onto τ²-bench. Everything else about that
 move is favourable — official Gymnasium RL interface, a few hundred MB on disk, user
 simulator can run on an API so the GPU stays free, and genuinely heterogeneous turn roles.
-One thing is unverified: **whether Qwen2.5-7B-Instruct produces a usable gradient signal
-there.** MUA-RL reports 28.3 on τ² telecom with a *32B* model, so a 7B could plausibly
-score near zero, and a near-zero score means an empty mixed bucket and no GRPO gradient.
+One thing was unverified: whether a model this size produces a usable gradient there.
+MUA-RL has since answered most of it — Qwen3-8B scores **19.1 zero-shot on telecom** and
+41.0 on retail, so the mixed bucket should not be empty. What remains is confirming that
+**this** wiring reproduces that: local vLLM as the agent, DeepSeek as the user simulator,
+seeded task sampling, our own bucket accounting.
 
 This is the same check M1 already ran on BIRD (`0 < pass@G < 1` share, measured 47.9%).
 
@@ -21,7 +23,7 @@ This is the same check M1 already ran on BIRD (`0 < pass@G < 1` share, measured 
 |---|---|---|
 | domain | **telecom** | 2285 tasks with 2218 distinct expected action sequences, and reward is `ENV_ASSERTION` only — a product of Python assertions on environment state, no LLM judge. retail (112/114) and airline (50/50) need NL/COMMUNICATE judging, so they are evaluation domains, not training domains. |
 | `solo_mode` | **False** | 32 telecom tasks expect actions with `requestor: user`; in solo mode those are unreachable. False is also the setting MUA-RL's number refers to. |
-| agent | Qwen2.5-7B-Instruct via local vLLM, litellm `openai/...` + `api_base` | the student |
+| agent | **Qwen3-8B** via local vLLM, litellm `openai/...` + `api_base` | the student. Changed from Qwen2.5-7B-Instruct after MUA-RL turned out to publish every Qwen3 scale in this exact environment: Qwen3-8B scores 19.1 zero-shot on telecom, which is both a sanity target for this pilot and a like-for-like comparison later. The M1 base-model comparison that picked Qwen2.5-7B was run on the SQL agent and does not transfer. |
 | user simulator | DeepSeek via API | keeps the GPU for vLLM only; ~0.01 CNY/rollout at M2 rates |
 | tasks | 60, sampled with seed 0 from `data/tau2/domains/telecom/tasks.json` | |
 | rollouts | G = 8, temperature 1.0 | same as the M1 pass@8 histogram |
@@ -32,7 +34,7 @@ This is the same check M1 already ran on BIRD (`0 < pass@G < 1` share, measured 
 
 Primary, identical to M1's GO gate:
 
-- **GO** — `mixed` bucket (`0 < correct < 8`) **> 20%** of tasks.
+- **GO** — `mixed` bucket (`0 < correct < 8`) **> 20%** of tasks. MUA-RL's 19.1 zero-shot implies this comfortably; a result far below it means the wiring is wrong, not that the domain is.
 - **NO-GO** — `all_fail` bucket **> 70%** of tasks.
 - Anything between the two is a **weak GO**: proceed only if the format-legality number
   below is healthy, otherwise treat as NO-GO.
@@ -49,7 +51,7 @@ Secondary, recorded but not gating:
 
 ## What each outcome means
 
-- **GO** → migrate. Archive the SQL environment on a branch (do not delete), then redo
+- **GO** → proceed. The SQL environment is already archived on the `sql-env` tag; redo
   M1/M2 on telecom: zero-shot baselines, teacher rejection sampling, LoRA SFT.
 - **NO-GO** → stay on BIRD and instead drop the hidden-schema constraint: show the full
   schema, keep the tools for value grounding (`sample_rows`) and the execute-inspect-revise

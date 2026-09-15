@@ -1,5 +1,11 @@
 # Results log
 
+> **Historical.** Everything below is the BIRD hidden-schema text-to-SQL setting, which the
+> project has moved off (see the README and `docs/pilot_tau2.md`). The code that produced these
+> numbers is on the `sql-env` tag. Kept because the methodology carries over: the judge/eval
+> consistency check, the pass@G gradient buckets, and the teacher rejection-sampling filter are
+> all reused in the new setting.
+
 All BIRD numbers are on the dev split unless noted. "agent" = hidden-schema multi-turn
 environment (`scripts/rollout.py`), "single" = full DDL, one shot (`scripts/single_turn.py`).
 Questions whose gold SQL fails to execute are excluded (1 of 300 dev, 8 of 200 train samples).

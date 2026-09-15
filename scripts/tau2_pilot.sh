@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Pilot: is tau2-bench telecom trainable at 7B? Settings and thresholds are frozen
+# Pilot: is tau2-bench telecom trainable at 8B? Settings and thresholds are frozen
 # in docs/pilot_tau2.md -- do not tune them after seeing a result.
 #
-#   bash scripts/serve_vllm.sh models/Qwen2.5-7B-Instruct qwen7b     # GPU box, first
+#   bash scripts/serve_vllm.sh models/Qwen3-8B qwen8b     # GPU box, first
 #   bash scripts/tau2_pilot.sh
 #   python scripts/tau2_buckets.py outputs/tau2_pilot_telecom.json
 #
@@ -16,7 +16,7 @@ TAU2=/root/autodl-tmp/tau2-bench
 G=${G:-8}
 N=${N:-60}
 SEED=${SEED:-0}
-MODEL=${MODEL:-qwen7b}
+MODEL=${MODEL:-qwen8b}
 BASE_URL=${BASE_URL:-http://localhost:8000/v1}
 USER_LLM=${USER_LLM:-deepseek/deepseek-chat}
 OUT=$REPO/outputs/tau2_pilot_telecom.json
