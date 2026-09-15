@@ -1,5 +1,5 @@
 # Symlinks to the data disk (git sees symlinks as files, so no trailing slash)
-data
+# data/ removed with the SQL migration; tau2 tasks ship inside the tau2-bench tree
 models
 ckpt
 *.sqlite

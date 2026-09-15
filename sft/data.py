@@ -3,10 +3,19 @@
 Encoding runs a trajectory through the model's own chat template with tool
 arguments as JSON objects, which is what the model emits natively and what the
 serving side renders back into its context, so the student trains on exactly
-what it will see at rollout time. The mask is found by rendering each prefix:
-tokens between "prefix + generation prompt" and "prefix + assistant turn" are
-the model's own, everything else (system, user, tool results, template
-scaffolding) is masked out of the loss.
+what it will see at rollout time.
+
+The mask is found by scanning the rendered token stream for ChatML turn
+boundaries: everything between a `<|im_start|>assistant\n` marker and the
+`<|im_end|>` that closes it is the model's own, and everything else (system,
+user, tool results, template scaffolding) is masked out of the loss. An earlier
+version derived the spans from prefix lengths instead -- render `messages[:i]`
+with a generation prompt, render `messages[:i+1]` without, take the difference.
+That assumed the template is prefix-stable, and Qwen3's is not: it injects an
+empty `<think></think>` block into the *last* assistant turn only, so a prefix
+render is not a prefix of the full render and every span came out misaligned,
+silently leaking tool output into the loss. Scanning the final stream cannot
+drift from it.
 
 Tool schemas are a parameter rather than an import: the environment owns them,
 and this module has to encode whatever environment is in play. The acceptance
@@ -32,26 +41,38 @@ def _template_message(m: dict) -> dict:
     return out
 
 
-def _tokens(tokenizer, messages, tools, add_generation_prompt: bool) -> list[int]:
-    text = tokenizer.apply_chat_template(messages, tools=tools, tokenize=False, add_generation_prompt=add_generation_prompt)
+def _render(tokenizer, messages, tools) -> list[int]:
+    text = tokenizer.apply_chat_template(messages, tools=tools, tokenize=False, add_generation_prompt=False)
     return tokenizer.encode(text, add_special_tokens=False)
+
+
+def _find(haystack: list[int], needle: list[int], start: int) -> int:
+    """Index of the next occurrence of `needle` at or after `start`, or -1."""
+    for i in range(start, len(haystack) - len(needle) + 1):
+        if haystack[i : i + len(needle)] == needle:
+            return i
+    return -1
+
+
+def assistant_spans(tokenizer, ids: list[int]) -> list[tuple[int, int]]:
+    """[start, end) of every assistant turn, `<|im_end|>` included: the model emitted it."""
+    opener = tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
+    closer = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    spans, at = [], 0
+    while (i := _find(ids, opener, at)) != -1:
+        start = i + len(opener)
+        end = next((j for j in range(start, len(ids)) if ids[j] == closer), len(ids) - 1)
+        spans.append((start, end + 1))
+        at = end + 1
+    return spans
 
 
 def encode(tokenizer, messages: list[dict], tools: list[dict], max_len: int) -> dict | None:
     """input_ids + labels (IGNORE outside assistant turns), or None if too long."""
-    wire = [_template_message(m) for m in messages]
-    ids = _tokens(tokenizer, wire, tools, add_generation_prompt=False)
+    ids = _render(tokenizer, [_template_message(m) for m in messages], tools)
     if len(ids) > max_len:
         return None
     labels = [IGNORE] * len(ids)
-    newline = tokenizer.encode("\n", add_special_tokens=False)
-    for i, m in enumerate(wire):
-        if m["role"] != "assistant":
-            continue
-        start = len(_tokens(tokenizer, wire[:i], tools, add_generation_prompt=True))
-        end = len(_tokens(tokenizer, wire[: i + 1], tools, add_generation_prompt=False))
-        # The template closes a turn with <|im_end|>\n; the model chose <|im_end|>, not the newline.
-        if ids[end - len(newline) : end] == newline:
-            end -= len(newline)
+    for start, end in assistant_spans(tokenizer, ids):
         labels[start:end] = ids[start:end]
     return {"input_ids": ids, "labels": labels}

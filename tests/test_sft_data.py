@@ -65,3 +65,31 @@ def test_tools_reach_the_template(tok):
 
 def test_too_long_is_dropped(tok):
     assert encode(tok, MESSAGES, TOOLS, max_len=50) is None
+
+
+def test_no_observation_leaks_at_any_trajectory_length(tok):
+    """The bug this guards: Qwen3's template is not prefix-stable, so span arithmetic
+    derived from prefix renders drifts and pulls tool output into the loss."""
+    for n in range(3, len(MESSAGES) + 1):
+        ex = encode(tok, MESSAGES[:n], TOOLS, max_len=4096)
+        on = tok.decode([t for t, l in zip(ex["input_ids"], ex["labels"]) if l != IGNORE])
+        assert "SECRET_OBSERVATION" not in on, f"observation leaked at length {n}"
+        assert "<|im_start|>" not in on, f"scaffolding leaked at length {n}"
+
+
+def test_every_learned_span_is_one_assistant_turn(tok):
+    ex = encode(tok, MESSAGES, TOOLS, max_len=4096)
+    ids, labels = ex["input_ids"], ex["labels"]
+    im_end = tok.convert_tokens_to_ids("<|im_end|>")
+    spans, i = [], 0
+    while i < len(ids):
+        if labels[i] != IGNORE:
+            j = i
+            while j < len(ids) and labels[j] != IGNORE:
+                j += 1
+            spans.append((i, j))
+            i = j
+        else:
+            i += 1
+    assert len(spans) == 2                                  # two assistant turns
+    assert all(ids[e - 1] == im_end for _, e in spans)      # each closes on <|im_end|>
