@@ -43,8 +43,10 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--max-len", type=int, default=12288)
-    ap.add_argument("--epochs", type=float, default=2)
+    # 32k, not 12k: the longest teacher trajectory encodes to 12,436 tokens and a
+    # shorter budget silently drops it, and the serving side runs at 32k anyway.
+    ap.add_argument("--max-len", type=int, default=32768)
+    ap.add_argument("--epochs", type=float, default=3, help="D4 scans 1/2/3; one checkpoint per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch", type=int, default=16, help="effective batch via gradient accumulation")
     ap.add_argument("--r", type=int, default=32)
@@ -71,7 +73,7 @@ def main():
         args=TrainingArguments(
             output_dir=args.out, num_train_epochs=args.epochs, max_steps=args.max_steps, learning_rate=args.lr,
             per_device_train_batch_size=1, gradient_accumulation_steps=args.batch,
-            lr_scheduler_type="cosine", warmup_steps=0.03, bf16=True, logging_steps=5,
+            lr_scheduler_type="cosine", warmup_ratio=0.03, bf16=True, logging_steps=5,
             save_strategy="epoch", report_to=[], remove_unused_columns=False,
         ),
         train_dataset=examples,
