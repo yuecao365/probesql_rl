@@ -29,3 +29,7 @@ logs/
 
 # Personal study notes with Chinese annotations; not published
 学习笔记/
+
+# LoRA checkpoint mirrored onto the system disk so it survives a machine move
+# (the data disk does not follow an AutoDL image); 500 MB of optimizer state.
+ckpt_backup/
