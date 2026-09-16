@@ -48,9 +48,10 @@ def main():
     ap.add_argument("--max-len", type=int, default=32768)
     ap.add_argument("--epochs", type=float, default=3, help="D4 scans 1/2/3; one checkpoint per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--batch", type=int, default=16, help="effective batch via gradient accumulation")
-    ap.add_argument("--r", type=int, default=32)
-    ap.add_argument("--alpha", type=int, default=64)
+    ap.add_argument("--batch", type=int, default=8, help="effective batch via gradient accumulation")
+    ap.add_argument("--r", type=int, default=16)
+    ap.add_argument("--alpha", type=int, default=32)   # alpha/r = 2
+    ap.add_argument("--dropout", type=float, default=0.1)
     ap.add_argument("--max-steps", type=int, default=-1, help="for smoke tests")
     args = ap.parse_args()
 
@@ -65,7 +66,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16, attn_implementation="sdpa")
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
-    model = get_peft_model(model, LoraConfig(r=args.r, lora_alpha=args.alpha, lora_dropout=0.05, target_modules=LINEAR_LAYERS, task_type="CAUSAL_LM"))
+    model = get_peft_model(model, LoraConfig(r=args.r, lora_alpha=args.alpha, lora_dropout=args.dropout, target_modules=LINEAR_LAYERS, task_type="CAUSAL_LM"))
     model.print_trainable_parameters()
 
     trainer = Trainer(
@@ -73,7 +74,9 @@ def main():
         args=TrainingArguments(
             output_dir=args.out, num_train_epochs=args.epochs, max_steps=args.max_steps, learning_rate=args.lr,
             per_device_train_batch_size=1, gradient_accumulation_steps=args.batch,
-            lr_scheduler_type="cosine", warmup_ratio=0.03, bf16=True, logging_steps=5,
+            # transformers 5 dropped warmup_ratio; warmup_steps takes a fraction and
+            # resolves it against the total (0.03 -> 2 steps here). Not a typo.
+            lr_scheduler_type="cosine", warmup_steps=0.03, bf16=True, logging_steps=5,
             save_strategy="epoch", report_to=[], remove_unused_columns=False,
         ),
         train_dataset=examples,
