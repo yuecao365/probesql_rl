@@ -11,6 +11,7 @@ is a merge step (sft/merge.py) before the adapter can serve as an RL start.
 
 import argparse
 import json
+import random
 import sys
 
 import torch
@@ -55,13 +56,24 @@ def main():
     # Resume exactly: the checkpoint carries optimizer, scheduler and RNG state, so a
     # run killed mid-epoch continues rather than restarting.
     ap.add_argument("--resume", default=None, help="path to a checkpoint-N directory")
+    ap.add_argument("--val-frac", type=float, default=0.1, help="held-out fraction, split by task")
     ap.add_argument("--max-steps", type=int, default=-1, help="for smoke tests")
     args = ap.parse_args()
 
     tok = AutoTokenizer.from_pretrained(args.model)
     with open(args.data) as f:
         raw = [json.loads(line) for line in f]
-    examples = [ex for ex in (encode(tok, r["messages"], as_tools(r["tools"]), args.max_len) for r in raw) if ex]
+    # Split by task_id, not by example: v2 holds up to four trajectories per task, and a
+    # random split would put siblings on both sides so the held-out loss would measure
+    # memorisation of tasks it had already seen.
+    tasks = sorted({r["task_id"] for r in raw})
+    random.Random(0).shuffle(tasks)
+    n_val = max(1, round(len(tasks) * args.val_frac))
+    val_tasks = set(tasks[:n_val])
+    enc = lambda r: encode(tok, r["messages"], as_tools(r["tools"]), args.max_len)
+    examples = [ex for r in raw if r["task_id"] not in val_tasks for ex in [enc(r)] if ex]
+    val = [ex for r in raw if r["task_id"] in val_tasks for ex in [enc(r)] if ex]
+    print(f"held out {len(val)} examples from {len(val_tasks)} tasks; training on {len(examples)}")
     learned = sum(sum(l != IGNORE for l in ex["labels"]) for ex in examples)
     total = sum(len(ex["input_ids"]) for ex in examples)
     print(f"{len(examples)}/{len(raw)} examples within {args.max_len} tokens; {learned}/{total} tokens in the loss ({learned / total:.1%})")
@@ -80,9 +92,13 @@ def main():
             # transformers 5 dropped warmup_ratio; warmup_steps takes a fraction and
             # resolves it against the total (0.03 -> 2 steps here). Not a typo.
             lr_scheduler_type="cosine", warmup_steps=0.03, bf16=True, logging_steps=5,
-            save_strategy="epoch", report_to=[], remove_unused_columns=False,
+            # A held-out loss per epoch is what makes the epoch scan readable: training loss
+            # falls either way, and the point where held-out loss turns is where to stop.
+            save_strategy="epoch", eval_strategy="epoch", per_device_eval_batch_size=1,
+            report_to=[], remove_unused_columns=False,
         ),
         train_dataset=examples,
+        eval_dataset=val,
         data_collator=Collator(tok.pad_token_id),
     )
     trainer.train(resume_from_checkpoint=args.resume)

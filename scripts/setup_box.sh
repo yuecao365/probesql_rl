@@ -5,6 +5,7 @@
 #   bash scripts/setup_box.sh rl         # just the training env
 #   bash scripts/setup_box.sh tau2       # just the benchmark env
 #   bash scripts/setup_box.sh model      # just the Qwen3-8B download
+#   bash scripts/setup_box.sh verl       # the RL trainer, in its own env
 #
 # Every non-obvious line here is a bug that cost a session once. They are commented
 # with what goes wrong without them; do not "clean up" a line you cannot explain.
@@ -89,6 +90,23 @@ setup_model() {
     /root/miniconda3/envs/rl/bin/hf download Qwen/Qwen3-8B --local-dir "$DATA/models/Qwen3-8B"
 }
 
+# ---------------------------------------------------------------- RL trainer
+setup_verl() {
+  step "veRL in its own conda env (version conflict with the SFT env)"
+  # verl 0.9.0 pins transformers <5.11 while the rl env runs 5.16.1, and the loss mask in
+  # sft/data.py was written against 5.16's chat-template behaviour. Installing verl into
+  # `rl` would downgrade transformers under the one piece of code that must not move.
+  # The two envs hand off through model files on disk, never through imports.
+  source /root/miniconda3/etc/profile.d/conda.sh
+  conda env list | grep -q '^verl ' || conda create -y -n verl python=3.10
+  conda activate verl
+  pip install -q "verl[vllm]==0.9.0"
+  conda env config vars set \
+    LD_PRELOAD=/root/miniconda3/envs/verl/lib/libstdc++.so.6 \
+    OMP_NUM_THREADS=16 -n verl
+  python -c "import verl; print('verl', verl.__version__)"
+}
+
 # ---------------------------------------------------------------- repo wiring
 setup_repo() {
   step "repo symlinks and secrets"
@@ -101,10 +119,12 @@ setup_repo() {
 
 case "$WHAT" in
   rl) setup_rl ;;
+  verl) setup_verl ;;
   tau2) setup_tau2 ;;
   model) setup_model ;;
   repo) setup_repo ;;
   all) setup_rl; setup_tau2; setup_model; setup_repo ;;
+  # verl is not in `all`: it is a separate env and only needed once RL starts.
   *) echo "usage: $0 [all|rl|tau2|model|repo]"; exit 1 ;;
 esac
 
