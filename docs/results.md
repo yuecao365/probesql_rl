@@ -83,3 +83,64 @@ errors are unchanged, so the two failures are additive, not the same one.
 The consequence is a constraint, not a curiosity: the user simulator is frozen as DeepSeek for
 SFT, RL and evaluation alike. Swapping it to save API spend would invalidate the SFT data and
 every number above, and risks an empty mixed bucket — no gradient, no project.
+
+## arm 1 — SFT cold start, full protocol (2026-09-17)
+
+Qwen3-8B + LoRA(r=16) SFT v2, epoch 3, merged. 114 base tasks x 4 rollouts, DeepSeek user at
+T=0, thinking off, 32k. Same frozen protocol as arm 0.
+
+| | arm 0 (base) | arm 1 (SFT v2 ep3) |
+|---|---|---|
+| pass@1 | 11.2% | **75.9% +/- 2.5%** |
+| fix-it / escalate | - | 75.5% / 77.5% |
+| protocol error rate | 62.4% | **0.3%** |
+| episodes killed by errors | - | 0.0% |
+| termination | - | 456/456 normal (user stop) |
+| mean turns / tool calls | - | 18.5 / 5.7 |
+
+The headline number is not the interesting one. What SFT bought is the protocol: 62.4% of
+baseline episodes died on tool-call format rather than on reasoning, and that is now 0.3%.
+
+**The number that sets up arm 2 is pass^4 = 41.2%** against pass^1 = 75.9%. The policy knows
+how to solve these tasks and cannot do it four times running. Consistency, not capability, is
+what is left on the table, and that is what a group-relative method is for.
+
+Group composition at G=4, which decides how much of an RL batch carries gradient:
+
+| bucket | share | consequence |
+|---|---|---|
+| all_pass | 41.2% | zero advantage; wasted rollouts |
+| **mixed** | **56.1%** | the only groups that train |
+| all_fail | 2.6% | zero advantage under a binary reward |
+
+Dynamic sampling therefore discards 43.9% of sampled groups, a **1.78x cost multiplier** on the
+user-simulator API. At G=8 the mixed share rises, so 1.78x is an upper bound.
+
+The 41.2% all_pass share is a statement about the training pool, not about the reward: after SFT
+the pool is too easy. Reward shaping cannot fix it; difficulty-filtering the pool can.
+
+## Entropy — SFT did not collapse the policy (2026-09-17)
+
+Mean token entropy over assistant spans on held-out trajectories, same mask as training:
+
+| model | entropy (nats) |
+|---|---|
+| Qwen3-8B base | 0.281 |
+| SFT epoch 1 | 0.414 |
+| SFT epoch 2 | 0.376 |
+| **SFT epoch 3** | **0.357** |
+
+Entropy falls monotonically across epochs but stays above the base model at epoch 3. A collapsed
+policy has nothing for GRPO to explore; this one still has spread. This is the measure that
+answers "is epoch 3 overtrained", and the loss curve is not -- training loss keeps falling in a
+model whose output distribution has already degenerated.
+
+## Training pool — the process reward is coarser than assumed (2026-09-17)
+
+Over the 2,171 tasks of `full\base`, `env_assertions` per task is 1 (985 tasks), 2 (1,078) or
+3 (108). So `progress_k` takes two values on 45% of the pool, three on 50%.
+
+**On the 45% with a single assertion, the process reward is identical to the binary terminal
+reward** and carries no extra information. The dense signal in this domain is
+`evaluation_criteria.actions` (median 6 per task, max 11), not the assertions. Arm 3 has to be
+built on `action_hit_k`, with `delta progress` as the secondary term, not the reverse.
