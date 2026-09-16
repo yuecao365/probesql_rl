@@ -52,6 +52,9 @@ def main():
     ap.add_argument("--r", type=int, default=16)
     ap.add_argument("--alpha", type=int, default=32)   # alpha/r = 2
     ap.add_argument("--dropout", type=float, default=0.1)
+    # Resume exactly: the checkpoint carries optimizer, scheduler and RNG state, so a
+    # run killed mid-epoch continues rather than restarting.
+    ap.add_argument("--resume", default=None, help="path to a checkpoint-N directory")
     ap.add_argument("--max-steps", type=int, default=-1, help="for smoke tests")
     args = ap.parse_args()
 
@@ -82,7 +85,7 @@ def main():
         train_dataset=examples,
         data_collator=Collator(tok.pad_token_id),
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume)
     model.save_pretrained(args.out)
     tok.save_pretrained(args.out)
 
