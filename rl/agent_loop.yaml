@@ -1,0 +1,4 @@
+# Registers the tau2 episode driver with veRL's agent-loop registry.
+# Referenced by actor_rollout_ref.rollout.agent.agent_loop_config_path.
+- name: tau2
+  _target_: rl.tau2_agent_loop.Tau2AgentLoop
