@@ -7,9 +7,10 @@ Reads `log_history` out of the newest `trainer_state.json` under the run directo
 Trainer's own stdout is unusable for this: transformers 5 overwrites the line with a tqdm
 bar, so the logged losses never survive in the log file even at logging_steps=5.
 
-Epoch boundaries are drawn because D4 is about *when* the model stops learning the behaviour
-and starts memorising the 141 tasks -- a loss that keeps falling after epoch 1 while the
-protocol error rate stops improving is the signature to look for.
+Both curves are drawn. Training loss falls whether the model is learning the behaviour or
+memorising the tasks, so on its own it says nothing about when to stop; the point where the
+held-out loss turns up while the training loss keeps falling is the answer. The gap between
+them is printed per epoch for the same reason.
 """
 
 from __future__ import annotations
@@ -18,6 +19,17 @@ import argparse
 import glob
 import json
 import os
+
+
+def eval_history(run_dir: str) -> list[dict]:
+    """Held-out loss, one point per epoch. The training curve alone cannot say when to stop."""
+    import glob as _glob
+    states = _glob.glob(os.path.join(run_dir, "checkpoint-*", "trainer_state.json"))
+    if not states:
+        return []
+    newest = max(states, key=lambda p: int(p.split("checkpoint-")[1].split("/")[0]))
+    with open(newest) as f:
+        return [r for r in json.load(f)["log_history"] if "eval_loss" in r]
 
 
 def history(run_dir: str) -> list[dict]:
@@ -63,6 +75,17 @@ def main():
     print("\ngrad_norm")
     print(sparkline(rows, "grad_norm", height=8))
 
+    ev = eval_history(args.run_dir)
+    if ev:
+        print("\nheld-out loss per epoch  (the turn here is where to stop)")
+        print(f"  {'epoch':>6}{'step':>7}{'eval_loss':>12}{'train_loss':>12}{'gap':>9}")
+        for r in ev:
+            near = min(rows, key=lambda t: abs(t["step"] - r["step"]))
+            gap = r["eval_loss"] - near["loss"]
+            print(f"  {r['epoch']:>6.0f}{r['step']:>7}{r['eval_loss']:>12.4f}{near['loss']:>12.4f}{gap:>9.4f}")
+    else:
+        print("\n(no held-out loss: this run had no eval_dataset)")
+
     print(f"\n{'step':>6}{'epoch':>7}{'loss':>9}{'grad_norm':>11}{'lr':>11}")
     for r in rows:
         print(f"{r['step']:>6}{r['epoch']:>7.2f}{r['loss']:>9.4f}{r['grad_norm']:>11.3f}{r['learning_rate']:>11.2e}")
@@ -82,7 +105,11 @@ def main():
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
-        ax[0].plot([r["step"] for r in rows], [r["loss"] for r in rows], marker="o", ms=3)
+        ax[0].plot([r["step"] for r in rows], [r["loss"] for r in rows], marker="o", ms=3, label="train")
+        if ev:
+            ax[0].plot([r["step"] for r in ev], [r["eval_loss"] for r in ev],
+                       marker="s", ms=6, color="tab:red", label="held-out")
+            ax[0].legend()
         ax[0].set_ylabel("loss")
         ax[1].plot([r["step"] for r in rows], [r["grad_norm"] for r in rows], marker="o", ms=3, color="tab:orange")
         ax[1].set_ylabel("grad norm")
