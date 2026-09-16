@@ -27,6 +27,18 @@ OUT=$REPO/outputs/tau2_pilot_telecom.json
 
 set -a; source "$REPO/.env"; set +a
 
+# tau2 asks "resume? (y/n)" when the output exists, which is an EOFError under nohup.
+# A pilot is one-shot, so refuse rather than silently resume a run made under different
+# settings; FORCE=1 archives the old output and starts clean.
+if [ -e "$OUT" ]; then
+  if [ "${FORCE:-0}" = 1 ]; then
+    mv "$OUT" "$OUT.$(date +%s).bak"
+  else
+    echo "$OUT exists. Inspect it, then rerun with FORCE=1 to archive it and start clean." >&2
+    exit 1
+  fi
+fi
+
 # Sample from the `base` split: that is telecom's standard 114-task benchmark, the set
 # MUA-RL's 19.1 refers to, and the only pool comparable to anything published. tasks.json
 # holds the 2285-task combinatorial expansion, which is the RL *training* pool, not the
