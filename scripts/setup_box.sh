@@ -99,12 +99,14 @@ setup_verl() {
   # The two envs hand off through model files on disk, never through imports.
   source /root/miniconda3/etc/profile.d/conda.sh
   conda env list | grep -q '^verl ' || conda create -y -n verl python=3.10
-  conda activate verl
-  pip install -q "verl[vllm]==0.9.0"
+  # Use the env's pip by absolute path rather than `conda activate`: activation does not
+  # take in a non-interactive subshell, and the install then silently lands nowhere (or
+  # worse, in whatever env was already active).
+  /root/miniconda3/envs/verl/bin/pip install -q "verl[vllm]==0.9.0"
   conda env config vars set \
     LD_PRELOAD=/root/miniconda3/envs/verl/lib/libstdc++.so.6 \
     OMP_NUM_THREADS=16 -n verl
-  python -c "import verl; print('verl', verl.__version__)"
+  /root/miniconda3/envs/verl/bin/python -c "import verl; print('verl', verl.__version__)"
 }
 
 # ---------------------------------------------------------------- repo wiring
