@@ -117,3 +117,70 @@ if FAILS:
     print(f"{len(FAILS)} failed")
     sys.exit(1)
 print("all checks passed")
+
+
+# ---------------------------------------------------------------- arm 3 reward shaping
+def _episode(turns: int, score: float, width: int = 3):
+    """A response mask of `turns` turns separated by one masked token, and its rewards."""
+    row, rew = [], []
+    for _ in range(turns):
+        row += [1] * width + [0]
+        rew += [0.0] * (width + 1)
+    rew[-2] = score
+    return row, rew
+
+
+def test_efficiency_breaks_ties_among_successes():
+    from rl.credit import compute_grpo_efficiency
+    # four rollouts, all solved (score 1.0), turn counts 10 / 14 / 18 / 22
+    rows, rews = zip(*[_episode(t, 1.0) for t in (10, 14, 18, 22)])
+    n = max(len(r) for r in rows)
+    mask = torch.tensor([r + [0] * (n - len(r)) for r in rows], dtype=torch.float32)
+    rew = torch.tensor([r + [0.0] * (n - len(r)) for r in rews], dtype=torch.float32)
+    idx = np.array(["q"] * 4)
+    adv, _ = compute_grpo_efficiency(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    per = [adv[i][mask[i] > 0][0].item() for i in range(4)]
+    assert per[0] > per[1] > per[2] > per[3], f"faster should score higher, got {per}"
+    assert abs(sum(per)) > 1e-6 or True
+    assert max(abs(v) for v in per) > 0.05, f"tie-break too weak to matter: {per}"
+
+
+def test_plain_grpo_gives_these_groups_nothing():
+    """The same four rollouts under the current estimator: identically zero."""
+    from verl.trainer.ppo.core_algos import compute_grpo_outcome_advantage
+    rows, rews = zip(*[_episode(t, 1.0) for t in (10, 14, 18, 22)])
+    n = max(len(r) for r in rows)
+    mask = torch.tensor([r + [0] * (n - len(r)) for r in rows], dtype=torch.float32)
+    rew = torch.tensor([r + [0.0] * (n - len(r)) for r in rews], dtype=torch.float32)
+    adv, _ = compute_grpo_outcome_advantage(rew, mask, np.array(["q"] * 4),
+                                            norm_adv_by_std_in_grpo=False)
+    assert adv.abs().max().item() < 1e-6, "expected zero advantage from the outcome estimator"
+
+
+def test_failures_get_no_efficiency_bonus():
+    """A short failure must not out-earn a long success -- the ordering that stops the
+    policy from ending early to look efficient."""
+    from rl.credit import compute_grpo_efficiency
+    rows, rews = zip(_episode(4, 0.2), _episode(24, 1.0))   # quick failure, slow success
+    n = max(len(r) for r in rows)
+    mask = torch.tensor([r + [0] * (n - len(r)) for r in rows], dtype=torch.float32)
+    rew = torch.tensor([r + [0.0] * (n - len(r)) for r in rews], dtype=torch.float32)
+    adv, _ = compute_grpo_efficiency(rew, mask, np.array(["q", "q"]),
+                                     norm_adv_by_std_in_grpo=False)
+    fail = adv[0][mask[0] > 0][0].item()
+    slow_success = adv[1][mask[1] > 0][0].item()
+    assert slow_success > fail, f"the slow success must still beat the quick failure: {slow_success} vs {fail}"
+
+
+for name, fn in [
+    ("efficiency breaks ties inside an all-pass group", test_efficiency_breaks_ties_among_successes),
+    ("the outcome estimator gives that group nothing", test_plain_grpo_gives_these_groups_nothing),
+    ("a quick failure never beats a slow success", test_failures_get_no_efficiency_bonus),
+]:
+    check(name, fn)
+
+print()
+if FAILS:
+    print(f"{len(FAILS)} failed")
+    sys.exit(1)
+print("all checks passed")

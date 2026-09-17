@@ -175,4 +175,72 @@ def register() -> list[str]:
 
     register_adv_est("ca1_discounted_turn")(compute_ca1_discounted_turn)
     register_adv_est("ca2_position_normalized")(compute_ca2_position_normalized)
-    return ["ca1_discounted_turn", "ca2_position_normalized"]
+    register_adv_est("grpo_efficiency")(compute_grpo_efficiency)
+    return ["ca1_discounted_turn", "ca2_position_normalized", "grpo_efficiency"]
+
+
+def compute_grpo_efficiency(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+    config=None,
+    w_eff: float = 0.3,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """GRPO, with a group-relative efficiency bonus paid only to trajectories that solved.
+
+    This is the half of arm 3's reward that the agent loop cannot compute, because it depends
+    on the other rollouts of the same task. The loop supplies R plus failure-side partial
+    credit; this adds `w_eff * eff` on top, where `eff` is 1 for the fastest success in the
+    group and 0 for the slowest.
+
+    Why group-relative rather than an absolute target. An absolute form, min(1, 15/T), maps
+    the observed 14-22 turn range onto 0.68-1.0, and after weighting it produced a mean
+    absolute advantage of 0.012 inside all-pass groups against 0.25-0.50 in mixed ones -- it
+    would have been drowned. Normalising inside the group restores the full range whatever the
+    task's natural length, and at w_eff=0.3 gives 0.105 against 0.480, about a quarter as
+    strong, which is the intended ordering: solving still dominates, speed breaks the tie.
+
+    Why it is worth having at all: on arm 2b, 75 of 114 tasks had all four rollouts succeed.
+    Their advantages are identically zero and those rollouts teach nothing, while the turn
+    counts inside them differ by a median of six. The signal was there and unused.
+
+    R is recovered as `score >= 1.0`: the agent loop scores a solved episode exactly 1.0 and a
+    failed one at most w_hit, which is well below 1.
+    """
+    scores = token_level_rewards.sum(dim=-1)
+    solved = (scores >= 1.0 - 1e-6).float()
+
+    turns = torch.tensor(
+        [max(1, len(turn_spans(response_mask[i]))) for i in range(response_mask.shape[0])],
+        dtype=torch.float32, device=scores.device,
+    )
+
+    by_group = defaultdict(list)
+    for i in range(scores.shape[0]):
+        if solved[i] > 0:
+            by_group[index[i]].append(float(turns[i]))
+    bounds = {g: (min(v), max(v)) for g, v in by_group.items()}
+
+    eff = torch.zeros_like(scores)
+    for i in range(scores.shape[0]):
+        if solved[i] > 0 and index[i] in bounds:
+            lo, hi = bounds[index[i]]
+            eff[i] = 1.0 if hi == lo else (hi - float(turns[i])) / (hi - lo)
+    shaped = scores + w_eff * solved * eff
+
+    id2 = defaultdict(list)
+    for i in range(shaped.shape[0]):
+        id2[index[i]].append(shaped[i])
+    stats = {}
+    for g, vals in id2.items():
+        t = torch.stack(vals)
+        stats[g] = (t.mean(), t.std() if t.numel() > 1 else torch.tensor(1.0, device=t.device))
+
+    out = shaped.clone()
+    for i in range(out.shape[0]):
+        mean, std = stats[index[i]]
+        out[i] = (out[i] - mean) / (std + epsilon) if norm_adv_by_std_in_grpo else out[i] - mean
+    advantages = out.unsqueeze(-1) * response_mask
+    return advantages, advantages

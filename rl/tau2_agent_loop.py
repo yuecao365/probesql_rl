@@ -58,6 +58,29 @@ def _action_from(content: str, tool_calls: list) -> tuple[str, str]:
     return (content or "").strip(), "message"
 
 
+def _action_hit_rate(info: dict) -> float:
+    """Share of the task's expected actions the episode actually reached.
+
+    tau2 returns `reward_info` as a JSON string on every step, and its `action_checks` carry
+    one entry per expected action with `action_match`. Three quarters of those actions have
+    `requestor: "user"` -- things the customer performs on the handset -- and they count too:
+    getting the customer to act is half of what this agent is for.
+    """
+    import json as _json
+
+    raw = (info or {}).get("reward_info")
+    if not raw:
+        return 0.0
+    try:
+        data = _json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return 0.0
+    checks = (data or {}).get("action_checks") or []
+    if not checks:
+        return 0.0
+    return sum(1 for c in checks if c.get("action_match")) / len(checks)
+
+
 @register("tau2")
 class Tau2AgentLoop(AgentLoopBase):
     def __init__(self, *args, **kwargs):
@@ -79,6 +102,9 @@ class Tau2AgentLoop(AgentLoopBase):
         # w_delta = 0 is outcome-only training and is what arm 2 runs; raising it turns on the
         # per-turn process reward. The two arms differ by this number alone.
         self.w_delta = float(os.environ.get("TAU2_W_DELTA", "0.0"))
+        # Partial credit for a failed episode, from the share of expected actions it did
+        # reach. Zero reproduces arm 2's binary outcome reward.
+        self.w_hit = float(os.environ.get("TAU2_W_HIT", "0.0"))
 
         self._tool_schemas = None
         self._task_set_patched = False
@@ -154,6 +180,7 @@ class Tau2AgentLoop(AgentLoopBase):
             turn_rewards: list[float] = []
             kinds: list[str] = []
             reward, terminated, turns = 0.0, False, 0
+            last_info: dict = {}
 
             while not terminated and turns < self.max_assistant_turns:
                 output = await self.server_manager.generate(
@@ -170,9 +197,10 @@ class Tau2AgentLoop(AgentLoopBase):
                 action, kind = _action_from(content, tool_calls)
                 kinds.append(kind)
 
-                observation, step_reward, terminated, _truncated, _info = await asyncio.to_thread(
+                observation, step_reward, terminated, _truncated, info = await asyncio.to_thread(
                     env.step, action
                 )
+                last_info = info
                 turn_rewards.append(float(step_reward))
                 reward = float(step_reward)
                 if terminated:
@@ -203,6 +231,23 @@ class Tau2AgentLoop(AgentLoopBase):
                 "TAU2_EPISODE_DONE task=%s turns=%d terminated=%d reward=%.3f",
                 task_id, turns, int(terminated), reward,
             )
+            # arm 3's shaped score. The two terms are disjoint by construction: the
+            # efficiency bonus multiplies R and so is unreachable without solving, which
+            # removes any reason to end early; the partial credit multiplies (1 - R) and so
+            # only separates failures from each other. Measured on arm 2b's 456 episodes,
+            # every successful trajectory hit 100% of its expected actions, so action hits
+            # carry no information among successes -- efficiency is the only signal that
+            # does, and efficiency is the one that reaches the 65.8% of groups where all
+            # four rollouts succeed and the advantage is currently zero.
+            #
+            # The efficiency part is group-relative and cannot be computed here, where only
+            # one trajectory is visible; the `grpo_efficiency` estimator adds it, counting
+            # turns off response_mask. What is computed here is R plus the failure-side
+            # partial credit, and R is recoverable downstream because a solved episode
+            # scores exactly 1.0 while a failed one scores at most w_hit.
+            hit_rate = _action_hit_rate(last_info)
+            reward = reward + self.w_hit * (1.0 - reward) * hit_rate
+            metrics["tau2_hit_rate"] = hit_rate
             metrics["tau2_turns"] = turns
             metrics["tau2_terminated"] = int(terminated)
             metrics["tau2_tool_turns"] = sum(1 for k in kinds if k.startswith("tool"))
