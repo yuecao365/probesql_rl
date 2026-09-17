@@ -41,6 +41,20 @@
 #                               the KV cache: with 32 concurrent episodes whose contexts keep
 #                               growing, agent turns per minute fell from 29 to 15 over ten
 #                               minutes as sequences were preempted.
+#   optim.lr=2e-5              not verl's 1e-6, which is its default for full-parameter PPO.
+#                               A LoRA adapter carries the whole update in a rank-16 subspace
+#                               and needs far more; this project's own SFT used 1e-4 on the
+#                               same adapter shape. At 1e-6 ten steps moved the weights by a
+#                               relative L2 of 9e-07 against SFT's 3.5e-03 -- four thousand
+#                               times too small to matter, and more steps could not close that.
+#   ppo_mini_batch_size=2      four gradient updates per rollout batch instead of one. The
+#                               rollouts are what cost money, so this multiplies what each
+#                               batch buys; it also restores ppo_kl and pg_clipfrac, which are
+#                               identically zero when the batch is a single mini-batch because
+#                               the ratio is then exp(0) by construction, not because the
+#                               policy held still.
+#   save_freq=5                a checkpoint every five steps, so the weight movement can be
+#                               measured an hour in rather than at the end.
 #   use_remove_padding=True    on, and it has to be: the trainer calls
 #                               left_right_2_no_padding unconditionally, so the unpad
 #                               code runs either way (verl/utils/attention_utils.py is
@@ -129,8 +143,8 @@ $VENV/bin/python -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.entropy_from_logits_with_chunking=True \
   actor_rollout_ref.actor.entropy_checkpointing=True \
   +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
-  actor_rollout_ref.actor.optim.lr=1e-6 \
-  actor_rollout_ref.actor.ppo_mini_batch_size=$BATCH \
+  actor_rollout_ref.actor.optim.lr=2e-5 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=2 \
   actor_rollout_ref.actor.use_kl_loss=False \
   actor_rollout_ref.actor.entropy_coeff=0 \
   actor_rollout_ref.actor.clip_ratio_low=0.2 \
@@ -167,7 +181,7 @@ $VENV/bin/python -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.total_training_steps=$STEPS \
   +actor_rollout_ref.actor.checkpoint.save_lora_only=True \
-  trainer.save_freq=10 \
+  trainer.save_freq=5 \
   trainer.test_freq=10 \
   trainer.default_local_dir=ckpt/rl/$EXP \
   trainer.project_name=turncredit-rl \
