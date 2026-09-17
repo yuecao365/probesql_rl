@@ -144,3 +144,44 @@ Over the 2,171 tasks of `full\base`, `env_assertions` per task is 1 (985 tasks),
 reward** and carries no extra information. The dense signal in this domain is
 `evaluation_criteria.actions` (median 6 per task, max 11), not the assertions. Arm 3 has to be
 built on `action_hit_k`, with `delta progress` as the secondary term, not the reverse.
+
+## arm 2 — GRPO, ten steps (2026-09-17)
+
+Ten steps of GRPO on top of the SFT checkpoint: eight tasks per step, eight rollouts each,
+outcome reward only (`w_delta=0`, CA-0), advantage not normalised by group std, clip-higher at
+0.28, token-level loss, dynamic sampling on. Two hours four minutes, no errors after the run
+started.
+
+| step | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| reward | .562 | .453 | .469 | .453 | .766 | .641 | .625 | .672 | **.266** | .469 |
+| entropy | .602 | .657 | .632 | .626 | .586 | .652 | .618 | .589 | .656 | .651 |
+| grad norm | .011 | .011 | .010 | .011 | .010 | .010 | .010 | .010 | .010 | .010 |
+| response len | 3194 | 3082 | 3244 | 3209 | 2589 | 2869 | 2771 | 3298 | 3736 | 3353 |
+
+**The training reward has no trend.** It ranges over fifty points and ends where it started.
+Steps five through eight looked like a rise; step nine at 0.266 and step ten at 0.469 ended
+that reading. With eight tasks per step, which tasks get drawn dominates the number -- the
+batch, not the policy, is what moves between steps.
+
+**The policy barely moved.** Gradient norm is 0.010 or 0.011 at every step, clip fraction and
+`ppo_kl` are zero throughout, and merging the trained adapter back onto the base changes a
+weight by at most 1.9e-06. At lr=1e-6 on a LoRA adapter, ten steps do not reach the policy.
+Two things follow for the next run, both with numbers behind them rather than taste: raise the
+learning rate, since LoRA carries the whole update in a rank-16 subspace, and raise the tasks
+per step, since AReaL's telecom runs used 8x64 against our 8x8.
+
+**Entropy held at 0.59-0.66**, above the 0.357 the SFT checkpoint started from, so there is no
+collapse and nothing was lost by exploring.
+
+`rollout_corr/kl` sat at 0.0002-0.0011: the rollout engine and the trainer agree on the
+log-probabilities of the same sequence almost exactly. In this configuration the
+rollout-training mismatch a TIS correction targets is small, which is itself worth reporting.
+
+### The evaluation is blocked, not done
+
+The frozen-protocol run on the 114 base tasks reported 18.6%, and that number is void: 346 of
+456 episodes ended in `infrastructure_error`, mean turns fell to 4.2 against arm 1's 18.5, and
+the log carries 1,727 copies of `Insufficient Balance` from the user simulator's API. The
+account ran out mid-evaluation. The measurement has to be repeated once it is topped up; until
+then arm 2 has a training curve and no comparable score.

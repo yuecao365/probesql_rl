@@ -20,7 +20,7 @@
 #                               SFT policy would only slow the thing being measured.
 #   loss_agg_mode=token-mean    token-level loss, so a 40-turn episode is not weighted the
 #                               same as a 6-turn one.
-#   agent.num_workers=8        sized against the KV cache, and it must divide
+#   agent.num_workers=32       sized against the KV cache, and it must divide
 #                               train_batch_size * rollout.n = 64, which rules out 12. Qwen3-8B costs 144 KB
 #                               of KV per token, so vLLM's 39.6 GB holds 169k tokens once the
 #                               16.4 GB of weights are out; a telecom episode reaches twenty to
@@ -30,6 +30,11 @@
 #                               measured as agent turns per minute falling 163 -> 32 as the
 #                               contexts grew. Evaluation reached 11.8 episodes a minute at
 #                               concurrency 8 precisely because vLLM had the whole card.
+#   dataloader_num_workers=2   eight forked workers exhausted the container memory and
+#                               the run was killed at the end of the first step.
+#   num_workers raised to 32   the earlier sizing assumed 23k-token episodes, which was
+#                               the duplicated-schema bug; at 2.6k tokens the KV cache
+#                               has room for many more in flight.
 #   val_before_train=False     the pre-training validation pass costs 64 episodes and the
 #                               held-out set cannot resolve anything anyway (+/-10.5%).
 #   gpu_memory_utilization=0.5 the actor is bf16 and needs about 20 GB, so 0.35 was starving
@@ -113,6 +118,7 @@ $VENV/bin/python -m verl.trainer.main_ppo \
   data.max_prompt_length=8192 \
   data.max_response_length=24576 \
   data.return_raw_chat=True \
+  data.dataloader_num_workers=2 \
   +data.apply_chat_template_kwargs.enable_thinking=False \
   actor_rollout_ref.model.path=/root/probesql/models/sft_v2_ep3 \
   actor_rollout_ref.model.lora_rank=16 \
@@ -153,7 +159,7 @@ $VENV/bin/python -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.multi_turn.max_assistant_turns=30 \
   actor_rollout_ref.rollout.agent.default_agent_loop=tau2 \
   actor_rollout_ref.rollout.agent.agent_loop_config_path=rl/agent_loop.yaml \
-  actor_rollout_ref.rollout.agent.num_workers=8 \
+  actor_rollout_ref.rollout.agent.num_workers=32 \
   actor_rollout_ref.rollout.calculate_log_probs=True \
   trainer.use_v1=False \
   trainer.val_before_train=False \
