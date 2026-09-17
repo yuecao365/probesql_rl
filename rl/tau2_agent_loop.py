@@ -81,6 +81,35 @@ class Tau2AgentLoop(AgentLoopBase):
         self.w_delta = float(os.environ.get("TAU2_W_DELTA", "0.0"))
 
         self._tool_schemas = None
+        self._task_set_patched = False
+
+    def _use_full_task_set(self) -> None:
+        """Point the domain's task loader at every task, not just the benchmark's 114.
+
+        AgentGymEnv takes one `domain` string and uses it both to build the environment and
+        to look a task up, but the task sets and the domains are named differently: the
+        loader registered as "telecom" returns the 114 `base` tasks, and the 2,285-task set
+        is registered as "telecom_full", which is not a domain and cannot be constructed.
+        So the training pool's task ids are invisible to the gym until the loader is swapped.
+
+        This makes the base tasks reachable too, which is exactly what must not be trained
+        on. What keeps them out is the dataset: build_rl_data.py takes `full \ base` and
+        asserts the intersection is empty. This function widens what *can* be looked up; it
+        does not widen what is sampled.
+        """
+        from tau2.registry import registry
+
+        if self._task_set_patched:
+            return
+        full_name = f"{self.domain}_full"
+        if full_name in registry.get_task_sets():
+            # register_tasks refuses to replace an existing name, so rebind the entry.
+            registry._tasks[self.domain] = registry.get_tasks_loader(full_name)
+            logger.info(
+                "tau2: %s task loader now serves the %s set (%d tasks)",
+                self.domain, full_name, len(registry.get_tasks_loader(self.domain)()),
+            )
+        self._task_set_patched = True
 
     def _schemas(self) -> list[dict]:
         """The agent-side tool schemas, read from the benchmark rather than hand-copied."""
@@ -100,6 +129,7 @@ class Tau2AgentLoop(AgentLoopBase):
         if task_id is None:
             raise ValueError("tau2 needs extra_info.task_id; the dataset builder must supply it")
 
+        self._use_full_task_set()
         metrics: dict[str, Any] = {}
         request_id = uuid4().hex
         schemas = self._schemas()
@@ -152,7 +182,13 @@ class Tau2AgentLoop(AgentLoopBase):
                 # message. Which one it was is decided by what the policy just did.
                 role = "tool" if kind.startswith("tool") else "user"
                 reply = [{"role": role, "content": observation or ""}]
-                reply_ids = await self.apply_chat_template(reply, tools=schemas, remove_system_prompt=True)
+                # No tools here. The schemas belong to the opening prompt; passing them again
+                # re-renders all thirteen of them into every turn -- 1,850 tokens each time,
+                # measured. Episodes then hit the response cap after about thirteen turns and
+                # score zero for being truncated, the context the policy conditions on stops
+                # matching anything it saw in SFT, and the KV cache fills with copies of the
+                # same text. verl's own ToolAgentLoop renders incremental turns without tools.
+                reply_ids = await self.apply_chat_template(reply, remove_system_prompt=True)
                 reply_ids = self.turn_separator + reply_ids
                 if len(response_mask) + len(reply_ids) >= self.response_length:
                     break
@@ -160,6 +196,13 @@ class Tau2AgentLoop(AgentLoopBase):
                 response_mask += [0] * len(reply_ids)
                 response_logprobs += [0.0] * len(reply_ids)
 
+            # One line per finished episode. The run had no per-episode marker in its logs,
+            # so progress could only be inferred from turn counts, and the markers tried
+            # first were printed more than once each.
+            logger.warning(
+                "TAU2_EPISODE_DONE task=%s turns=%d terminated=%d reward=%.3f",
+                task_id, turns, int(terminated), reward,
+            )
             metrics["tau2_turns"] = turns
             metrics["tau2_terminated"] = int(terminated)
             metrics["tau2_tool_turns"] = sum(1 for k in kinds if k.startswith("tool"))
