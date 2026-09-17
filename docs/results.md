@@ -178,10 +178,42 @@ collapse and nothing was lost by exploring.
 log-probabilities of the same sequence almost exactly. In this configuration the
 rollout-training mismatch a TIS correction targets is small, which is itself worth reporting.
 
-### The evaluation is blocked, not done
+### arm 2 under the frozen protocol
 
-The frozen-protocol run on the 114 base tasks reported 18.6%, and that number is void: 346 of
-456 episodes ended in `infrastructure_error`, mean turns fell to 4.2 against arm 1's 18.5, and
-the log carries 1,727 copies of `Insufficient Balance` from the user simulator's API. The
-account ran out mid-evaluation. The measurement has to be repeated once it is topped up; until
-then arm 2 has a training curve and no comparable score.
+A first attempt reported 18.6% and was void: the user simulator's account ran out of balance
+mid-run, 346 of 456 episodes ended in `infrastructure_error`, and mean turns fell to 4.2
+against arm 1's 18.5. It is kept as `outputs/eval_arm2.json.balance_failed.bak` because it is
+a clean example of an environment failure wearing the costume of a capability regression --
+the headline number alone looks like a catastrophic drop. The re-run below was checked for
+health before its score was read: zero balance errors, mean turns 18.6, and 455 of 456
+episodes ending in `user_stop`.
+
+| | arm 0 | arm 1 | arm 2 |
+|---|---|---|---|
+| pass@1 | 11.2% | 75.9% +/- 2.5% | **79.2% +/- 2.5%** |
+| fix-it (94 tasks) | - | 75.5% | 77.1% |
+| escalate (20 tasks) | - | 77.5% | 88.8% |
+| all_pass | - | 41.2% | 50.9% |
+| all_fail | - | 2.6% | 3.5% |
+| protocol errors | 62.4% | 0.3% | 0.2% |
+
+**The +3.3 points are not distinguishable from zero.** Both arms ran the same 114 tasks, so
+the comparison can be paired, which takes task difficulty out of the variance:
+
+```
+paired bootstrap over tasks, 10,000 resamples
+  difference  +3.3%   95% CI [-1.6%, +8.2%]
+  per task    arm 2 better on 31, worse on 23, tied on 60
+  sign test   p = 0.34
+```
+
+That agrees with everything the training run said: gradient norm fixed at 0.010 for ten steps,
+`ppo_kl` and clip fraction at zero throughout, and a largest weight change of 1.9e-06. Three
+independent measurements, one conclusion -- at lr=1e-6 with eight tasks a step, ten steps of
+GRPO do not move the policy. The escalate split (77.5% -> 88.8%) and the all_pass share
+(41.2% -> 50.9%) both point the right way and neither survives alone: escalate is twenty
+tasks, and all_pass comes from the same rollouts as the headline.
+
+Arm 2's value is not a score. It is a working single-GPU agentic RL loop -- rollout against a
+live user simulator, LoRA weight sync into vLLM, GRPO update, checkpoint, merge, evaluation --
+and two parameters to change next, each with a measurement behind it rather than a preference.
