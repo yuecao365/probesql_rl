@@ -27,10 +27,31 @@ tail.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
 import numpy as np
 import torch
+
+logger = logging.getLogger(__file__)
+
+
+def _norm_by_std(config, fallback: bool) -> bool:
+    """Whether to divide the advantage by the group's standard deviation.
+
+    verl passes `norm_adv_by_std_in_grpo` to its own GRPO branch but not to a registered
+    estimator: `compute_advantage` builds `adv_kwargs` from the batch alone, so a custom
+    estimator silently takes its own default. Ours defaulted to True, which is why arm 3 ran
+    as standard GRPO although `algorithm.norm_adv_by_std_in_grpo=False` was on the command
+    line -- visible only as a max advantage of 2.44 where the un-normalised bound is 1.3.
+    Reading it off `config` makes the flag mean what it says.
+    """
+    if config is None:
+        return fallback
+    value = getattr(config, "norm_adv_by_std_in_grpo", None)
+    if value is None and hasattr(config, "get"):
+        value = config.get("norm_adv_by_std_in_grpo", None)
+    return fallback if value is None else bool(value)
 
 
 def turn_spans(mask_row: torch.Tensor) -> list[tuple[int, int]]:
@@ -94,6 +115,7 @@ def compute_ca1_discounted_turn(
     critic-free structure: a turn is good if it beats the other turns this group produced on
     the same task.
     """
+    norm_adv_by_std_in_grpo = _norm_by_std(config, norm_adv_by_std_in_grpo)
     spans, returns = _returns_per_turn(token_level_rewards, response_mask, gamma)
 
     pooled = defaultdict(list)
@@ -133,6 +155,7 @@ def compute_ca2_position_normalized(
     with fewer than `min_count` trajectories fall back to the pooled baseline, because a
     standard deviation over one sample is not a baseline.
     """
+    norm_adv_by_std_in_grpo = _norm_by_std(config, norm_adv_by_std_in_grpo)
     spans, returns = _returns_per_turn(token_level_rewards, response_mask, gamma)
 
     by_pos = defaultdict(list)
@@ -215,6 +238,7 @@ def compute_grpo_efficiency(
     R is recovered as `score >= 1.0`: the agent loop scores a solved episode exactly 1.0 and a
     failed one at most w_hit, which is well below 1.
     """
+    norm_adv_by_std_in_grpo = _norm_by_std(config, norm_adv_by_std_in_grpo)
     scores = token_level_rewards.sum(dim=-1)
     solved = (scores >= 1.0 - 1e-6).float()
 
@@ -279,6 +303,7 @@ def compute_ca3_shaped_turn(
     At beta=0 the first identity forces `G_k == S_i` for every k and this function returns
     `compute_grpo_efficiency`'s output exactly. `test_credit.py` pins that.
     """
+    norm_adv_by_std_in_grpo = _norm_by_std(config, norm_adv_by_std_in_grpo)
     scores = token_level_rewards.sum(dim=-1)
     solved = (scores >= 1.0 - 1e-6).float()
 
@@ -333,6 +358,33 @@ def compute_ca3_shaped_turn(
     # within a trajectory means this degenerated back into arm 3.
     compute_ca3_shaped_turn.turn_advantage_var = (
         sum(turn_var) / len(turn_var) if turn_var else 0.0
+    )
+    # And the one that says whether the agent loop and the trainer agree about the turns.
+    # `G_k` is recovered by multiplying a turn's share by the turn count, so if the loop
+    # divided by a different count than `turn_spans` finds here, every advantage is scaled by
+    # the ratio and nothing downstream would say so. Checking it is two lines: the recovered
+    # returns must average back to the row sum.
+    drift = 0.0
+    for i in range(advantages.shape[0]):
+        row_spans = spans[i]
+        if not row_spans:
+            continue
+        n = len(row_spans)
+        recovered = sum(float(token_level_rewards[i, s:e].sum()) * n for s, e in row_spans) / n
+        drift = max(drift, abs(recovered - float(scores[i])))
+    compute_ca3_shaped_turn.turn_sum_drift = drift
+    compute_ca3_shaped_turn.turn_count_mean = (
+        sum(len(sp) for sp in spans) / max(1, len(spans))
+    )
+    compute_ca3_shaped_turn.max_abs_advantage = float(advantages.abs().max())
+    # print, not logger: warnings from this module never reached the run logs, which is why
+    # the loop's own TAU2_EPISODE_DONE line was invisible for a whole run too.
+    print(
+        f"CA3 check: turns/traj={compute_ca3_shaped_turn.turn_count_mean:.2f} "
+        f"turn_adv_var={compute_ca3_shaped_turn.turn_advantage_var:.4f} "
+        f"max|adv|={compute_ca3_shaped_turn.max_abs_advantage:.3f} "
+        f"norm_by_std={norm_adv_by_std_in_grpo} sum_drift={drift:.2e}",
+        flush=True,
     )
     return advantages, advantages
 

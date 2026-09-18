@@ -102,13 +102,18 @@ MODE=${2:-full}
 # scalar reward path unchanged. arm4null exists to be run once: at beta=0 the whole arm 4 path
 # -- live hit tracking, per-turn placement, the ca3 estimator -- has to reproduce arm 3 step
 # for step, and a run that does not is a bug, not a result.
+# NORM is not a free choice. verl never passes norm_adv_by_std_in_grpo to a registered
+# estimator, so arm 3 ran std-normalised although the flag on the command line said otherwise,
+# while arm 2 used the built-in GRPO branch and honoured it. The estimators now read the flag,
+# and each arm is pinned to what it actually did, so arm 4 stays one variable from the arm 3
+# run that is already measured rather than silently becoming two.
 case "$ARM" in
-  arm2)     ADV=grpo                    ; W_HIT=0.0 ;;
-  arm3)     ADV=grpo_efficiency         ; W_HIT=0.2 ;;
-  arm4)     ADV=ca3_shaped_turn         ; W_HIT=0.2 ; BETA=0.35 ;;
-  arm4null) ADV=ca3_shaped_turn         ; W_HIT=0.2 ; BETA=0.0  ;;
-  arm4a)    ADV=ca1_discounted_turn     ; W_HIT=0.2 ;;
-  arm4b)    ADV=ca2_position_normalized ; W_HIT=0.2 ;;
+  arm2)     ADV=grpo                    ; W_HIT=0.0 ; NORM=False ;;
+  arm3)     ADV=grpo_efficiency         ; W_HIT=0.2 ; NORM=True  ;;
+  arm4)     ADV=ca3_shaped_turn         ; W_HIT=0.2 ; NORM=True  ; BETA=0.35 ;;
+  arm4null) ADV=ca3_shaped_turn         ; W_HIT=0.2 ; NORM=True  ; BETA=0.0  ;;
+  arm4a)    ADV=ca1_discounted_turn     ; W_HIT=0.2 ; NORM=True  ;;
+  arm4b)    ADV=ca2_position_normalized ; W_HIT=0.2 ; NORM=True  ;;
   *) echo "unknown arm: $ARM (arm2|arm3|arm4|arm4null|arm4a|arm4b)"; exit 1 ;;
 esac
 VENV=/root/autodl-tmp/envs/verl
@@ -151,7 +156,7 @@ export VERL_ATTN_IMPLEMENTATION=sdpa
 env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy \
 $VENV/bin/python -m verl.trainer.main_ppo \
   algorithm.adv_estimator=$ADV \
-  algorithm.norm_adv_by_std_in_grpo=False \
+  algorithm.norm_adv_by_std_in_grpo=$NORM \
   algorithm.use_kl_in_reward=False \
   algorithm.filter_groups.enable=True \
   algorithm.filter_groups.metric=score \
