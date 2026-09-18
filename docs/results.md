@@ -217,3 +217,142 @@ tasks, and all_pass comes from the same rollouts as the headline.
 Arm 2's value is not a score. It is a working single-GPU agentic RL loop -- rollout against a
 live user simulator, LoRA weight sync into vLLM, GRPO update, checkpoint, merge, evaluation --
 and two parameters to change next, each with a measurement behind it rather than a preference.
+
+## Three metrics that were zero by construction (2026-09-18)
+
+Arm 2's write-up leans on `ppo_kl` and `pg_clipfrac` being zero for ten steps. Two of those
+three readings were worthless, and the reason is worth keeping.
+
+With `ppo_epochs=1` and `ppo_mini_batch_size == train_batch_size`, the only forward pass of a
+step runs on the same parameters that produced `old_log_prob`. The ratio is `exp(0) = 1` for
+every token, so `ppo_kl` is zero and the clip fraction is zero **whatever the policy does**.
+They measure the configuration, not the update. Only the gradient norm and the merged weight
+delta survive as evidence, and those two still say what arm 2 concluded.
+
+Setting `ppo_mini_batch_size=2` against `train_batch_size=8` gives four gradient updates per
+batch and makes both metrics live again. It also restores verl's own 4:1 default -- the
+earlier `ppo_mini_batch_size=$BATCH` was the non-standard setting, not this.
+
+## The learning rate was four thousand times too small (2026-09-18)
+
+`optim.lr=1e-6` was inherited from verl's full-parameter PPO example and never adapted to a
+rank-16 LoRA adapter, although our own SFT trains the same adapter at 1e-4. The check is one
+line: merge the trained adapter onto the base and take the largest weight change.
+
+| | SFT, lr=1e-4 | arm 2, lr=1e-6 |
+|---|---|---|
+| max weight delta | 3.5e-03 | 9.3e-07 |
+
+Arm 2b onward runs at `lr=2e-5`. This is the single change that turned arm 2's +3.3 points
+(CI crossing zero) into arm 2b's +8.1.
+
+## arm 2b and arm 3 — GRPO and shaped reward, 15 and 25 steps (2026-09-18)
+
+Same protocol as arm 1 throughout: the frozen `base` split, 114 tasks, four rollouts, the
+DeepSeek user simulator. Training draws only from `full \ base`. Every number below comes out
+of `scripts/rl_stats.py`, which reads the saved runs and recomputes the table and the tests.
+
+| | p^1 | p^2 | p^3 | p^4 | all_fail | turns | calls | dup | errors |
+|---|---|---|---|---|---|---|---|---|---|
+| arm 1 SFT | 75.9% | 61.0% | 50.2% | 41.2% | 2.6% | 17.7 | 5.7 | 0.09 | 0.0% |
+| arm 2b s15 | 84.0% | 75.6% | 70.0% | 65.8% | 3.5% | 17.9 | 6.2 | 0.23 | 0.0% |
+| arm 2b s25 | 83.6% | 74.0% | 67.3% | 62.3% | 2.6% | 16.8 | 5.8 | 0.11 | 0.2% |
+| arm 3 s15 | 80.7% | 68.4% | 59.6% | 52.6% | 1.8% | 16.8 | 5.8 | 0.10 | 0.4% |
+| **arm 3 s25** | **86.4%** | **77.8%** | **71.5%** | **66.7%** | 1.8% | 16.6 | 6.3 | 0.14 | 0.4% |
+
+`turns`, `calls` and `dup` are over successful rollouts only, so a fast failure cannot flatter
+them. `p^k` is tau2's own pass^k, the chance that all k of k drawn rollouts pass.
+
+Paired bootstrap over tasks, 10,000 resamples:
+
+```
+  arm 2b s15 - SFT      +8.1%   CI [ +3.1%, +13.2%]  p=0.0012   43 better / 18 worse / 53 tied
+  arm 2b s25 - SFT      +7.7%   CI [ +3.1%, +12.3%]  p=0.0014   43 / 19 / 52
+  arm 3  s15 - SFT      +4.8%   CI [ +0.0%,  +9.6%]  p=0.058    37 / 23 / 54
+  arm 3  s25 - SFT     +10.5%   CI [ +5.5%, +15.6%]  p<0.0001   49 / 21 / 44
+  arm 3  s25 - arm 2b s25  +2.9%   CI [ -1.5%,  +7.2%]  p=0.22   27 / 23 / 64
+  arm 3  s15 - arm 2b s15  -3.3%   CI [ -7.7%,  +1.1%]  p=0.15   18 / 31 / 65
+```
+
+**RL over the SFT checkpoint is real and arm 3 over arm 2b is not shown.** The +2.9 points at
+step 25 and the -3.3 at step 15 have overlapping intervals and opposite signs; one seed and a
+measured noise floor of +/-2.5 points between two snapshots of the same run do not separate
+them. The honest claim is that the shaped reward did not cost anything and that its 25-step
+result is the best single number in the table.
+
+What did move under the shaped reward is the thing it was designed to move, and judging it by
+pass^1 was the wrong yardstick from the start: arm 3's efficiency term multiplies `R`, so it
+only ranks trajectories that already succeeded. Paired over the tasks both arms solved, over
+successful rollouts only:
+
+```
+  arm 3 s15 vs arm 2b s15   (110 tasks)
+      turns             18.30 -> 17.39    -5.0%   p=0.0040
+      tool calls         6.35 ->  6.01    -5.3%   p=0.0004
+      duplicate calls    0.26 ->  0.10   -61.8%   p=0.0002
+  arm 3 s25 vs arm 2b s25   (109 tasks)
+      turns             16.97 -> 16.55    -2.5%   p=0.15
+      tool calls         5.88 ->  6.42    +9.1%   p<0.0001
+      duplicate calls    0.13 ->  0.19   +45.1%   p=0.19
+```
+
+**At step 15 the shaped reward buys a 5.0% shorter solution and 61.8% fewer repeated calls at
+no cost in pass^1.** That is the claim the design supports, and it is a continuous paired
+measurement rather than a 114-task binomial, which is why it clears significance where the
+pass^1 comparison cannot.
+
+By step 25 the efficiency channel has stopped paying and the correctness channel has taken
+over -- arm 3 is making *more* tool calls than arm 2b while scoring higher. Arm 2b shows the
+mirror image on its own: from s15 to s25 it loses 0.4 points of pass^1 and gains a 5.7%
+shorter solution. Both arms end up spending their budget on whichever channel still has room,
+and 25 steps is where the two cross. Arm 3 is the only arm that improves with the extra ten
+steps (+5.7 points, CI [+1.8%, +9.9%], p=0.005); arm 2b is flat (-0.4 points, p=0.87).
+
+Neither `all_fail` moves out of the 1.8-3.5% band and protocol errors stay under 0.5%, so
+none of this is a health artefact.
+
+## Can a per-turn credit signal be recovered at all? (2026-09-19)
+
+Arm 4 assigns credit to the turn where an expected action completed, which needs a per-turn
+hit signal. The first design read it off the `reward_info` the environment returns each step.
+That does not work: `AgentGymEnv._get_reward` returns `{}` while `_simulation_run is None`, and
+`_simulation_run` is assigned only in the orchestrator thread's `finally` -- that is, when the
+episode ends. `reward_info` is empty on every non-terminal step.
+
+The replacement needs no environment support. `ActionEvaluator` matches gold actions by set
+membership over the tool calls in the trajectory, so it is a pure function of the message
+prefix and monotone by construction; the agent loop already holds the history it is building
+and can replay the comparison incrementally for nothing. `scripts/turn_hit_probe.py` runs that
+replay over the 456 saved episodes of arm 3 s25:
+
+```
+  expected actions per task           4.65 mean, 12 max
+  distinct turns carrying a hit       3.99 mean, 4 median, 11 max
+  first-to-last hit spread            7 turns median, 18 at p90
+  hits landing on the final turn      4.4%
+  relative position of a hit          0.54 median, 0.25 at p10, 0.93 at p90
+  decile histogram                    [1, 91, 217, 264, 281, 250, 207, 153, 197, 292]
+```
+
+**Only 4.4% of hits land on the last turn, so this signal cannot be recovered from the
+terminal reward** -- which is the whole case for arm 4. Arm 2b's episodes give 3.91 / 7 / 3.1%
+/ 0.52, so the spread is a property of the task and not of arm 3's reward. The first decile
+holds 1 hit out of 1953, confirming on a larger sample that discounting a terminal reward
+backwards is the wrong direction here.
+
+Two findings change the design:
+
+**77% of hits happen in a user message** (1513 user against 440 assistant), because three
+quarters of telecom's expected actions are performed by the customer on the handset. Those
+tokens are zeros in `response_mask` and can carry no gradient, so credit has to be attributed
+backwards to the assistant turn that asked for the action.
+
+**The degenerate cases are exactly the single-action tasks** -- 100% of the m=1 tasks put all
+hits in one turn, against 4% at m=2 and 0% at m>=4. It is structural, not a signal defect.
+
+Finally, the claim that arm 4 revives groups that dynamic sampling discards is weaker than it
+looked. 94 of 114 tasks have all four rollouts succeeding, but only **one** of those groups
+also has identical turn counts, which is what it takes for arm 3's advantage to be exactly
+zero -- the group-relative efficiency term is doing more work than expected. Inside all-pass
+groups the local term's pooled standard deviation is 0.0323 against arm 3's typical 0.105,
+so arm 4 adds about 31% on top of an existing signal rather than rescuing a dead one.
