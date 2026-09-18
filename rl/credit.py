@@ -176,7 +176,13 @@ def register() -> list[str]:
     register_adv_est("ca1_discounted_turn")(compute_ca1_discounted_turn)
     register_adv_est("ca2_position_normalized")(compute_ca2_position_normalized)
     register_adv_est("grpo_efficiency")(compute_grpo_efficiency)
-    return ["ca1_discounted_turn", "ca2_position_normalized", "grpo_efficiency"]
+    register_adv_est("ca3_shaped_turn")(compute_ca3_shaped_turn)
+    return [
+        "ca1_discounted_turn",
+        "ca2_position_normalized",
+        "grpo_efficiency",
+        "ca3_shaped_turn",
+    ]
 
 
 def compute_grpo_efficiency(
@@ -244,3 +250,97 @@ def compute_grpo_efficiency(
         out[i] = (out[i] - mean) / (std + epsilon) if norm_adv_by_std_in_grpo else out[i] - mean
     advantages = out.unsqueeze(-1) * response_mask
     return advantages, advantages
+
+
+
+def compute_ca3_shaped_turn(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+    config=None,
+    w_eff: float = 0.3,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Arm 4: arm 3's advantage, redistributed across the turns of each trajectory.
+
+    The agent loop has already placed `G_k / T` on the last token of turn k, where
+    `G_k = S_i * ((1 - beta) + beta * shape_k)` and `mean_k G_k == S_i`. So this reads the
+    same `S_i` off the row sum that `compute_grpo_efficiency` does, computes the same
+    group-relative efficiency bonus against the same baseline, and differs from it in one
+    respect: a turn is credited with `G_k` rather than with the trajectory's `S_i`.
+
+    Two identities hold for every beta and are what make arm 4 comparable against the arm 3
+    run that already exists, with no matched control:
+
+        sum_over_tokens(rewards)  == S_i           the reward function is untouched
+        mean_over_turns(advantage) == arm 3's advantage for that trajectory
+
+    At beta=0 the first identity forces `G_k == S_i` for every k and this function returns
+    `compute_grpo_efficiency`'s output exactly. `test_credit.py` pins that.
+    """
+    scores = token_level_rewards.sum(dim=-1)
+    solved = (scores >= 1.0 - 1e-6).float()
+
+    spans = [turn_spans(response_mask[i]) for i in range(response_mask.shape[0])]
+    turns = torch.tensor(
+        [max(1, len(s)) for s in spans], dtype=torch.float32, device=scores.device
+    )
+
+    by_group = defaultdict(list)
+    for i in range(scores.shape[0]):
+        if solved[i] > 0:
+            by_group[index[i]].append(float(turns[i]))
+    bounds = {g: (min(v), max(v)) for g, v in by_group.items()}
+
+    eff = torch.zeros_like(scores)
+    for i in range(scores.shape[0]):
+        if solved[i] > 0 and index[i] in bounds:
+            lo, hi = bounds[index[i]]
+            eff[i] = 1.0 if hi == lo else (hi - float(turns[i])) / (hi - lo)
+    bonus = w_eff * solved * eff
+    shaped = scores + bonus
+
+    # The baseline is over trajectories, not over turns. Pooling turns would weight a long
+    # trajectory more heavily and smuggle in a length penalty that duplicates `eff`.
+    id2 = defaultdict(list)
+    for i in range(shaped.shape[0]):
+        id2[index[i]].append(shaped[i])
+    stats = {}
+    for g, vals in id2.items():
+        t = torch.stack(vals)
+        stats[g] = (t.mean(), t.std() if t.numel() > 1 else torch.tensor(1.0, device=t.device))
+
+    advantages = torch.zeros_like(token_level_rewards)
+    turn_var = []
+    for i in range(advantages.shape[0]):
+        mean, std = stats[index[i]]
+        row_spans = spans[i] or [(0, response_mask.shape[1])]
+        n = len(row_spans)
+        vals = []
+        for s, e in row_spans:
+            g_k = float(token_level_rewards[i, s:e].sum()) * n
+            a = g_k + float(bonus[i]) - float(mean)
+            if norm_adv_by_std_in_grpo:
+                a = a / (float(std) + epsilon)
+            advantages[i, s:e] = a
+            vals.append(a)
+        if len(vals) > 1:
+            turn_var.append(float(torch.tensor(vals).var()))
+
+    advantages = advantages * response_mask
+    # The one diagnostic that says whether credit assignment happened at all: zero variance
+    # within a trajectory means this degenerated back into arm 3.
+    compute_ca3_shaped_turn.turn_advantage_var = (
+        sum(turn_var) / len(turn_var) if turn_var else 0.0
+    )
+    return advantages, advantages
+
+# Registering at import time, not only through register(). verl builds the advantage function
+# inside the TaskRunner Ray actor, a different process from the one that loads the agent loop,
+# so a call made there never reaches here. `actor_rollout_ref.model.external_lib=rl.credit`
+# imports this module in the process that needs it, and the import alone is enough.
+try:
+    register()
+except Exception:  # pragma: no cover - verl may not be importable in a bare test process
+    pass

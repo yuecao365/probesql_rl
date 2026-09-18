@@ -37,7 +37,19 @@ from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutp
 from verl.experimental.agent_loop.tool_parser import ToolParser
 from verl.utils.rollout_trace import rollout_trace_op
 
+from rl.shape import turn_returns
+
 logger = logging.getLogger(__file__)
+
+# verl loads this module through agent_loop.yaml before it builds the advantage function, so
+# registering here is what makes ca1_discounted_turn, ca2_position_normalized and
+# grpo_efficiency reachable from `algorithm.adv_estimator`.
+try:
+    from rl.credit import register as _register_credit
+
+    _register_credit()
+except Exception:  # a missing estimator must not take the rollout down
+    logger.warning("credit estimators did not register", exc_info=True)
 
 
 def _action_from(content: str, tool_calls: list) -> tuple[str, str]:
@@ -81,6 +93,69 @@ def _action_hit_rate(info: dict) -> float:
     return sum(1 for c in checks if c.get("action_match")) / len(checks)
 
 
+
+def _spans(mask: list[int]) -> list[tuple[int, int]]:
+    """Contiguous runs of ones: one run per assistant turn, as [start, end)."""
+    spans, start = [], None
+    for i, v in enumerate(mask):
+        if v > 0 and start is None:
+            start = i
+        elif v <= 0 and start is not None:
+            spans.append((start, i))
+            start = None
+    if start is not None:
+        spans.append((start, len(mask)))
+    return spans
+
+
+def _golden_actions(env) -> list:
+    """The task's expected actions, or an empty list if this task has none."""
+    try:
+        task = env._get_task()
+        criteria = getattr(task, "evaluation_criteria", None)
+        return list(getattr(criteria, "actions", None) or [])
+    except Exception:  # a task without actions must not take the episode down
+        logger.warning("tau2: could not read evaluation_criteria.actions", exc_info=True)
+        return []
+
+
+def _new_hits(env, golden: list, matched: set) -> int:
+    """How many expected actions completed since the last call, updating `matched`.
+
+    tau2's own `ActionEvaluator` matches a gold action by asking whether *any* tool call in the
+    trajectory compares equal to it, so the matched set is a monotone function of the message
+    prefix and replaying it turn by turn is exact rather than an approximation. The environment
+    cannot be asked instead: `AgentGymEnv._get_reward` returns `{}` until the orchestrator
+    thread has finished, so `reward_info` is empty on every non-terminal step.
+
+    The orchestrator's live trajectory is read directly rather than through `get_trajectory()`,
+    which deep-copies and re-sorts the whole list on every call.
+
+    Three quarters of telecom's expected actions are performed by the customer on the handset
+    and so appear in a user message, whose tokens are zeros in `response_mask` and can carry no
+    gradient. Counting them here, right after the policy's own turn, is what attributes them
+    backwards to the turn that asked for the action.
+    """
+    orchestrator = getattr(env, "_orchestrator", None)
+    if orchestrator is None or not golden:
+        return 0
+    calls = [
+        tc
+        for message in list(getattr(orchestrator, "trajectory", []) or [])
+        for tc in (getattr(message, "tool_calls", None) or [])
+    ]
+    if not calls:
+        return 0
+    found = 0
+    for action in golden:
+        key = getattr(action, "action_id", None) or id(action)
+        if key in matched:
+            continue
+        if any(action.compare_with_tool_call(tc) for tc in calls):
+            matched.add(key)
+            found += 1
+    return found
+
 @register("tau2")
 class Tau2AgentLoop(AgentLoopBase):
     def __init__(self, *args, **kwargs):
@@ -105,6 +180,13 @@ class Tau2AgentLoop(AgentLoopBase):
         # Partial credit for a failed episode, from the share of expected actions it did
         # reach. Zero reproduces arm 2's binary outcome reward.
         self.w_hit = float(os.environ.get("TAU2_W_HIT", "0.0"))
+        # Arm 4. Setting TAU2_BETA at all -- even to 0 -- spreads the same total across the
+        # turns instead of putting it on the last token; leaving it unset keeps arm 2 and arm
+        # 3 on verl's scalar path, untouched. beta=0 is the null: it has to come out of the
+        # estimator identical to arm 3, and running it through this path is how that gets
+        # checked end to end rather than only in a unit test.
+        self.turn_reward = os.environ.get("TAU2_BETA") is not None
+        self.beta = float(os.environ.get("TAU2_BETA") or 0.0)
 
         self._tool_schemas = None
         self._task_set_patched = False
@@ -181,6 +263,9 @@ class Tau2AgentLoop(AgentLoopBase):
             kinds: list[str] = []
             reward, terminated, turns = 0.0, False, 0
             last_info: dict = {}
+            golden = _golden_actions(env) if self.turn_reward else []
+            matched: set = set()
+            hit_turns: list[int] = []
 
             while not terminated and turns < self.max_assistant_turns:
                 output = await self.server_manager.generate(
@@ -203,6 +288,8 @@ class Tau2AgentLoop(AgentLoopBase):
                 last_info = info
                 turn_rewards.append(float(step_reward))
                 reward = float(step_reward)
+                if golden:
+                    hit_turns += [turns - 1] * _new_hits(env, golden, matched)
                 if terminated:
                     break
 
@@ -253,16 +340,32 @@ class Tau2AgentLoop(AgentLoopBase):
             metrics["tau2_tool_turns"] = sum(1 for k in kinds if k.startswith("tool"))
             metrics["tau2_multi_call_turns"] = sum(1 for k in kinds if k == "tool_multi")
 
+            metrics["tau2_hit_turns"] = len(hit_turns)
+
             response_ids = prompt_ids[init_len:]
+            mask = response_mask[: self.response_length]
+            extra = {"tau2_task_id": task_id, "tau2_turn_rewards": turn_rewards}
+            if self.turn_reward:
+                # Arm 4 places the same total on the turn that earned it. Turn boundaries come
+                # from the mask that is about to be returned, not from `turns`, so a truncated
+                # episode cannot end up with one more turn here than the trainer will see.
+                spans = _spans(mask)
+                if spans:
+                    per_turn = turn_returns(reward, len(spans), hit_turns, self.beta)
+                    extra["token_reward_positions"] = [e - 1 for _, e in spans]
+                    # divided by the turn count so the row still sums to `reward`: the
+                    # estimator multiplies it back to recover G_k
+                    extra["token_reward_values"] = [g / len(spans) for g in per_turn]
+                    metrics["tau2_shaped_turns"] = len(spans)
             return AgentLoopOutput(
                 prompt_ids=prompt_ids[:init_len],
                 response_ids=response_ids[: self.response_length],
-                response_mask=response_mask[: self.response_length],
+                response_mask=mask,
                 response_logprobs=response_logprobs[: self.response_length],
                 reward_score=reward,
                 num_turns=turns,
                 metrics=metrics,
-                extra_fields={"tau2_task_id": task_id, "tau2_turn_rewards": turn_rewards},
+                extra_fields=extra,
             )
         finally:
             await asyncio.to_thread(env.close)

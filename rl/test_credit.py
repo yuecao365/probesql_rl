@@ -184,3 +184,141 @@ if FAILS:
     print(f"{len(FAILS)} failed")
     sys.exit(1)
 print("all checks passed")
+
+
+# ---------------------------------------------------------------- arm 4 turn-level credit
+def _turn_reward_row(score, n_turns, hit_turns, beta, width=3):
+    """What the tau2_turn reward manager writes for one trajectory, as (mask row, reward row).
+
+    Mirrors `Tau2TurnRewardManager.__call__` rather than calling it, so these run without verl.
+    The manager itself is three lines around this same arithmetic.
+    """
+    from rl.shape import turn_returns
+
+    row, rew = [], []
+    per_turn = turn_returns(score, n_turns, hit_turns, beta)
+    for g in per_turn:
+        row += [1] * width + [0]
+        rew += [0.0] * (width - 1) + [g / n_turns, 0.0]
+    return row, rew
+
+
+def _group(beta, spec):
+    """A group of trajectories as (rewards, mask, index) ready for an estimator."""
+    rows, rews = [], []
+    for score, n_turns, hits in spec:
+        row, rew = _turn_reward_row(score, n_turns, hits, beta)
+        rows.append(row)
+        rews.append(rew)
+    width = max(len(r) for r in rows)
+    mask = torch.tensor([r + [0] * (width - len(r)) for r in rows], dtype=torch.float32)
+    rew = torch.tensor([r + [0.0] * (width - len(r)) for r in rews], dtype=torch.float32)
+    return rew, mask, np.array(["g"] * len(rows))
+
+
+SPEC = [(1.0, 12, [7, 8, 10]), (1.0, 16, [5, 10, 13]), (1.0, 20, [8, 12, 17]), (0.1333, 22, [6, 14])]
+
+
+def test_row_sum_is_the_score_whatever_beta():
+    from rl.shape import turn_returns
+
+    for beta in (0.0, 0.35, 1.0):
+        rew, mask, _ = _group(beta, SPEC)
+        for i, (score, _, _) in enumerate(SPEC):
+            assert abs(float(rew[i].sum()) - score) < 1e-5, (
+                f"beta={beta} row {i} sums to {float(rew[i].sum())}, not {score} -- "
+                "arm 4 would no longer share arm 3's reward function"
+            )
+    # and the identity that makes it true
+    g = turn_returns(1.3, 11, [4, 7], 0.35)
+    assert abs(sum(g) / len(g) - 1.3) < 1e-9, sum(g) / len(g)
+
+
+def test_beta_zero_is_arm_three_exactly():
+    from rl.credit import compute_ca3_shaped_turn, compute_grpo_efficiency
+
+    rew, mask, idx = _group(0.0, SPEC)
+    a4, _ = compute_ca3_shaped_turn(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    a3, _ = compute_grpo_efficiency(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    gap = float((a4 - a3).abs().max())
+    assert gap < 1e-5, f"beta=0 must reproduce arm 3 bit for bit, largest gap {gap}"
+    assert compute_ca3_shaped_turn.turn_advantage_var < 1e-9, "beta=0 must give flat turns"
+
+
+def test_mean_turn_advantage_is_the_arm_three_advantage():
+    from rl.credit import compute_ca3_shaped_turn, compute_grpo_efficiency
+
+    rew, mask, idx = _group(0.35, SPEC)
+    a4, _ = compute_ca3_shaped_turn(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    a3, _ = compute_grpo_efficiency(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    for i in range(len(SPEC)):
+        spans = turn_spans(mask[i])
+        mean4 = sum(float(a4[i, s]) for s, _ in spans) / len(spans)
+        flat3 = float(a3[i][mask[i] > 0][0])
+        assert abs(mean4 - flat3) < 1e-4, (
+            f"row {i}: arm 4's turns average {mean4}, arm 3 gives {flat3} -- the group "
+            "statistics would no longer match"
+        )
+
+
+def test_the_hit_turns_get_the_most():
+    from rl.credit import compute_ca3_shaped_turn
+
+    rew, mask, idx = _group(0.35, SPEC)
+    adv, _ = compute_ca3_shaped_turn(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    spans = turn_spans(mask[0])
+    per_turn = [float(adv[0, s]) for s, _ in spans]
+    hits = SPEC[0][2]
+    best = max(range(len(per_turn)), key=lambda k: per_turn[k])
+    assert best in hits, f"the top-scoring turn {best} is not one of the hit turns {hits}"
+    assert per_turn[-1] == min(per_turn), "the closing turn, which earns nothing, must rank last"
+    assert compute_ca3_shaped_turn.turn_advantage_var > 1e-6, "beta>0 must differentiate turns"
+
+
+def test_no_hits_falls_back_to_flat():
+    from rl.credit import compute_ca3_shaped_turn, compute_grpo_efficiency
+
+    spec = [(1.0, 9, []), (1.0, 13, []), (0.0, 11, []), (1.0, 15, [])]
+    rew, mask, idx = _group(0.6, spec)
+    a4, _ = compute_ca3_shaped_turn(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    a3, _ = compute_grpo_efficiency(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    assert float((a4 - a3).abs().max()) < 1e-5, "with nothing to shape, arm 4 must be arm 3"
+
+
+def test_cap_is_a_cap():
+    from rl.shape import CAP, turn_shape
+
+    for n_turns, hits in [(25, [19]), (30, [28]), (20, [14]), (40, [5])]:
+        shape = turn_shape(n_turns, hits)
+        assert max(shape) <= CAP + 1e-6, (
+            f"T={n_turns} hits={hits} reached {max(shape):.3f} against a cap of {CAP} -- "
+            "clipping and renormalising by the new mean hands the excess back"
+        )
+        assert abs(sum(shape) / len(shape) - 1.0) < 1e-9, "the cap must not change the mean"
+
+
+def test_early_turns_are_held_down():
+    from rl.shape import turn_shape
+
+    # measured: the first decile of a trajectory holds 1 hit in 1,953, so it must not be
+    # rewarded like the middle, where the median hit sits
+    shape = turn_shape(20, [9, 13, 17])
+    assert max(shape[:2]) < 1.0 < max(shape[8:]), shape
+
+
+for name, fn in [
+    ("the reward total is the score whatever beta is", test_row_sum_is_the_score_whatever_beta),
+    ("beta=0 reproduces arm 3 exactly", test_beta_zero_is_arm_three_exactly),
+    ("mean turn advantage equals arm 3's advantage", test_mean_turn_advantage_is_the_arm_three_advantage),
+    ("the turns that completed actions score highest", test_the_hit_turns_get_the_most),
+    ("a trajectory with no hits falls back to arm 3", test_no_hits_falls_back_to_flat),
+    ("the cap actually caps", test_cap_is_a_cap),
+    ("the opening turns are held below average", test_early_turns_are_held_down),
+]:
+    check(name, fn)
+
+print()
+if FAILS:
+    print(f"{len(FAILS)} failed")
+    sys.exit(1)
+print("arm 4 checks passed")
