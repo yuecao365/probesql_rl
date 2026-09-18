@@ -356,3 +356,91 @@ also has identical turn counts, which is what it takes for arm 3's advantage to 
 zero -- the group-relative efficiency term is doing more work than expected. Inside all-pass
 groups the local term's pooled standard deviation is 0.0323 against arm 3's typical 0.105,
 so arm 4 adds about 31% on top of an existing signal rather than rescuing a dead one.
+
+## Correction: arm 3 was not Dr.GRPO (2026-09-19)
+
+`algorithm.norm_adv_by_std_in_grpo=False` is on every run's command line, and arm 2 obeyed it.
+Arm 3 did not. `compute_advantage` passes the flag into verl's own GRPO branch but builds
+`adv_kwargs` for a *registered* estimator from the batch alone, so `grpo_efficiency` took its
+own signature default of `True` and arm 3 ran as standard GRPO.
+
+Nothing raised an error. The only trace was in a metric nobody had a reason to read:
+
+| | max advantage | un-normalised bound |
+|---|---|---|
+| arm 2b, built-in `grpo` | 0.875 | 0.875 = 1 - 1/8, exactly one success in a group of eight |
+| arm 3, registered `grpo_efficiency` | 2.44 | 1.3 |
+
+Arm 2b sits exactly on the bound; arm 3 sits at 1.9x it. Arm 4's first smoke read 5.95, which
+is what finally sent me looking.
+
+Two consequences, and only the second changes anything already written:
+
+- Arm 3's numbers stand. Standard GRPO is a legitimate configuration, and the run is
+  internally consistent with itself.
+- **The arm 2b vs arm 3 comparison is two variables, not one**: shaped reward *and* advantage
+  normalisation. The +2.9% at step 25 and -3.3% at step 15 were already inside the noise band,
+  so no conclusion moves, but neither difference can be attributed to reward shaping alone.
+
+The estimators now read the flag off the config they are handed, and the runner pins each arm
+to what it actually did rather than to what reads well. Arm 4 keeps `True` deliberately: its
+whole design is to sit one variable from the arm 3 run that is already measured, and switching
+normalisation at the same time would cost that.
+
+The same investigation found that `logger.warning` from `rl/` never reached the run logs at
+all, which is why the agent loop's per-episode marker had been invisible for a whole run.
+Diagnostics now print.
+
+## arm 4 — the reward, redistributed (2026-09-19)
+
+Arm 4 changes where a trajectory's reward sits, not how much it is. Two identities hold by
+construction and are what let it be compared against the existing arm 3 run with no matched
+control:
+
+```
+  sum over tokens of the reward   == arm 3's score for that trajectory
+  mean over turns of the advantage == arm 3's advantage for that trajectory
+```
+
+The per-turn weight is built from *where the expected actions completed*, which is an
+observation rather than a payment -- a successful episode earns the same 1.0 whichever turn it
+did the work on. Reading positions instead of rewarding them is what gives arm 4 a signal on
+the 86% of rollouts that succeed, where arm 3's `(1 - R)` partial-credit term is identically
+zero. `beta` is the only knob; `beta=0` reproduces arm 3 bit for bit, which is a test rather
+than an argument.
+
+```
+  r_k     = actions first completed at turn k / total hits
+  L_k     = r_k + 0.3 * L_{k+1}                     lam=0.3
+  L_k    += 0.5 * mean(L)                           a turn after the last hit is not worthless
+  shape_k = water_fill(L_k / mean(L), cap=3.0)      mean(shape) == 1
+  G_k     = S_i * ((1 - beta) + beta * shape_k)     beta=0.35
+```
+
+`water_fill` replaces the obvious clip-then-renormalise, which does not work and looks as
+though it does: clipping lowers the mean, so dividing by it scales every entry back up
+*including the one just clipped*, and a cap of 3.0 was letting 12.0 through as 4.9. Moving the
+excess to the entries still under the cap keeps the mean at one and makes the cap real. It
+binds only on the single-action tasks, which are 14% of episodes and the only ones that put
+every hit in one turn. With it, `sd(shape)` over the 430 replayed episodes is 0.827, and
+`beta = 0.31 / 0.827` rounds to 0.35.
+
+Verified on 32 live trajectories before the run started:
+
+```
+  CA3 check: turns/traj=19.12 turn_adv_var=1.4671 max|adv|=5.716
+             norm_by_std=True sum_drift=1.19e-07
+  critic/score/max 1.0000001   actor/ppo_kl 2.1e-05   actor/entropy 0.611
+```
+
+`sum_drift` is the check that matters. `G_k` is recovered downstream by multiplying a turn's
+share by the turn count, so if the agent loop divided by a different count than `turn_spans`
+finds in the trainer, every advantage would be scaled by the ratio and nothing would say so.
+At 1.19e-07 it is float32 noise: the two agree. `turn_adv_var` being non-zero is the other
+half -- turns are actually differentiated rather than quietly collapsing back to arm 3.
+
+One honest caveat. `turn_adv_var=1.47` is stronger than the 0.31x the design aimed at, because
+std normalisation amplifies everything inside a low-variance group and all-pass groups are
+exactly those. The balance *within* a group is unchanged, and arm 3 carries the same
+normalisation, so the comparison stays one variable -- but beta is not doing quite what its
+derivation says, and the three diagnostics are what will show whether that matters.
