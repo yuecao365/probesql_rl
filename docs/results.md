@@ -444,3 +444,66 @@ std normalisation amplifies everything inside a low-variance group and all-pass 
 exactly those. The balance *within* a group is unchanged, and arm 3 carries the same
 normalisation, so the comparison stays one variable -- but beta is not doing quite what its
 derivation says, and the three diagnostics are what will show whether that matters.
+
+## arm 4 — turn-level credit, measured (2026-09-19)
+
+Twenty-five steps, `beta=0.35`, everything else identical to arm 3. This is the only
+single-variable comparison in the project: the reward function is byte-identical (the row sum
+is arm 3's score, checked every step at `sum_drift` 1.0-1.3e-07), the advantage normalisation
+is the same, dynamic sampling is off in both, and `beta=0` reproduces arm 3 bit for bit in the
+tests. What changed is where a trajectory's reward sits.
+
+| | p^1 | p^2 | p^3 | p^4 | all_fail | turns | calls |
+|---|---|---|---|---|---|---|---|
+| arm 1 SFT | 75.9% | 61.0% | 50.2% | 41.2% | 2.6% | 17.7 | 5.7 |
+| arm 2b s25 | 83.6% | 74.0% | 67.3% | 62.3% | 2.6% | 16.8 | 5.8 |
+| **arm 3 s25** | **86.4%** | **77.8%** | **71.5%** | **66.7%** | 1.8% | 16.6 | 6.3 |
+| arm 4 s15 | 81.4% | 69.4% | 61.0% | 54.4% | 1.8% | 17.6 | 5.7 |
+| arm 4 s25 | 82.0% | 71.3% | 64.0% | 58.8% | 2.6% | 17.6 | 5.8 |
+
+```
+  arm 4 s15 - arm 3 s15   +0.7%   CI [-3.5%, +5.0%]   p=0.80    29 / 29 / 56
+  arm 4 s25 - arm 3 s25   -4.4%   CI [-9.2%, +0.2%]   p=0.075   18 / 34 / 62
+  arm 4 s25 - arm 1 SFT   +6.1%   CI [+1.3%, +11.0%]  p=0.017
+```
+
+**Turn-level credit did not improve pass^1**, flat at step 15 and negative but not significant
+at step 25. It did something else, in the same direction at both step counts and growing with
+training:
+
+```
+                       total turns        tool turns          message turns
+  arm 4 s15 vs arm 3   +4.5%  p=0.0038    +1.6%  p=0.33    ->  +5.7%   p=0.0036
+  arm 4 s25 vs arm 3   +8.2%  p<0.0001    +1.0%  p=0.54    ->  +11.3%  p<0.0001
+```
+
+**Every extra turn is a turn spent talking to the customer. Backend tool turns do not move at
+all**, at either step count. Successful arm 4 trajectories run 1.36 turns longer than arm 3's
+and make no more backend calls for it.
+
+The cause is the attribution rule, not the mechanism. Telecom is dual control and 76% of its
+expected actions are performed by the customer on the handset, inside a user message whose
+tokens are zeros in `response_mask` and can carry no gradient. Credit for them is therefore
+attributed backwards, to the assistant turn that asked for the action -- which is a message
+turn. Arm 4 puts its largest advantages there, and the policy generalised the wrong invariant:
+not *say this, here*, but *produce more customer-facing instruction turns*.
+
+Three things say the mechanism itself worked and the result is a property of the design:
+
+- `sum_drift` stayed at 1.0-1.3e-07 for all 25 steps, so the reward function never drifted
+  from arm 3's.
+- `turn_advantage_var` ran between 0.11 and 4.70 and never trended to zero, so turns stayed
+  differentiated rather than quietly collapsing back to a single scalar.
+- The effect grows monotonically from s15 to s25 (+5.7% -> +11.3%), which noise does not do.
+
+**What arm 4 is worth reporting for is the negative result and its mechanism**: on a
+dual-control task, turn-level credit shifts the policy toward whichever action type the
+attribution rule points at. The obvious next design is to stop crediting the asking turn and
+instead credit the turn by what the environment state did, which does not privilege one side
+of the dual control -- but that is a different experiment, not a tweak.
+
+`turn_advantage_var` also recorded the difficulty bias that Dr.GRPO describes, as a by-product.
+It tracks `max|adv|` exactly and splits into two regimes: easy batches (reward ~0.75, 18-21
+turns) give 1.0-2.4, hard batches (reward 0.41-0.57, 21-26 turns) give 0.11-0.29. The same
+credit signal receives a gradient weight that differs 5-10x depending on how hard the batch
+happened to be, which is what dividing by the group standard deviation does.

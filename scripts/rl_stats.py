@@ -21,6 +21,8 @@ ARMS = [
     ("arm2b s25", "outputs/eval_arm2b_s25.json"),
     ("arm3  s15", "outputs/eval_arm3_s15.json"),
     ("arm3  s25", "outputs/eval_arm3_s25.json"),
+    ("arm4  s15", "outputs/eval_arm4_s15.json"),
+    ("arm4  s25", "outputs/eval_arm4_s25.json"),
 ]
 
 
@@ -86,10 +88,11 @@ for name, _ in ARMS:
           f"{statistics.mean(r['dups'] for r in ok):>6.2f} {err:>7.1%}")
 
 print("\npaired bootstrap on per-task pass^1, 10,000 resamples over tasks")
-pairs = [("arm1 SFT", "arm2b s15"), ("arm1 SFT", "arm2b s25"),
-         ("arm1 SFT", "arm3  s15"), ("arm1 SFT", "arm3  s25"),
+pairs = [("arm1 SFT", "arm2b s25"), ("arm1 SFT", "arm3  s25"), ("arm1 SFT", "arm4  s25"),
          ("arm2b s15", "arm3  s15"), ("arm2b s25", "arm3  s25"),
-         ("arm2b s15", "arm2b s25"), ("arm3  s15", "arm3  s25")]
+         ("arm3  s15", "arm4  s15"), ("arm3  s25", "arm4  s25"),
+         ("arm2b s15", "arm4  s15"), ("arm2b s25", "arm4  s25"),
+         ("arm4  s15", "arm4  s25")]
 for a, b in pairs:
     va = [pass_hat(data[a][t], 1) for t in tasks]
     vb = [pass_hat(data[b][t], 1) for t in tasks]
@@ -102,7 +105,7 @@ for a, b in pairs:
 
 print("\nefficiency, paired over tasks both arms solved at least once, successful rollouts only")
 for a, b in [("arm2b s15", "arm3  s15"), ("arm2b s25", "arm3  s25"),
-             ("arm2b s15", "arm2b s25"), ("arm3  s15", "arm3  s25")]:
+             ("arm3  s15", "arm4  s15"), ("arm3  s25", "arm4  s25")]:
     both = [t for t in tasks
             if any(r["solved"] for r in data[a][t]) and any(r["solved"] for r in data[b][t])]
     print(f"  {b} vs {a}   ({len(both)} tasks)")

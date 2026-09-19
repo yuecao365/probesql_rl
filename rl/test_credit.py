@@ -322,3 +322,51 @@ if FAILS:
     print(f"{len(FAILS)} failed")
     sys.exit(1)
 print("arm 4 checks passed")
+
+
+# ------------------------------------------------- the estimator as verl actually calls it
+def test_verl_passes_the_normalisation_flag():
+    """Call through `compute_advantage`, not the estimator, because that is where arm 3 broke.
+
+    Every test above sets `norm_adv_by_std_in_grpo` by hand -- a parameter the production path
+    could not set, so they stayed green while arm 3 ran std-normalised for twenty-five steps.
+    This one builds a DataProto and goes through verl's own dispatch, which is the only way to
+    catch a flag that never arrives.
+    """
+    import numpy as _np
+    import torch as _torch
+    from omegaconf import OmegaConf
+    from tensordict import TensorDict
+
+    from verl import DataProto
+    from verl.trainer.ppo.ray_trainer import compute_advantage
+
+    from rl.credit import compute_ca3_shaped_turn
+
+    rew, mask, idx = _group(0.0, SPEC)
+    for flag in (False, True):
+        data = DataProto(
+            batch=TensorDict({"token_level_rewards": rew, "response_mask": mask},
+                             batch_size=rew.shape[0]),
+            non_tensor_batch={"uid": _np.array(idx, dtype=object)},
+        )
+        out = compute_advantage(
+            data, adv_estimator="ca3_shaped_turn", norm_adv_by_std_in_grpo=flag,
+            config=OmegaConf.create({"norm_adv_by_std_in_grpo": flag, "gamma": 1.0, "lam": 1.0}),
+        )
+        got = out.batch["advantages"]
+        want, _ = compute_ca3_shaped_turn(rew, mask, idx, norm_adv_by_std_in_grpo=flag)
+        gap = float((got - want).abs().max())
+        assert gap < 1e-5, f"norm={flag}: verl's dispatch gave something else, gap {gap}"
+        # and the two settings must actually differ, or the check proves nothing
+    a, _ = compute_ca3_shaped_turn(rew, mask, idx, norm_adv_by_std_in_grpo=False)
+    b, _ = compute_ca3_shaped_turn(rew, mask, idx, norm_adv_by_std_in_grpo=True)
+    assert float((a - b).abs().max()) > 0.1, "the flag has to change the answer for this to test anything"
+
+
+check("verl's dispatch actually delivers the normalisation flag", test_verl_passes_the_normalisation_flag)
+print()
+if FAILS:
+    print(f"{len(FAILS)} failed")
+    sys.exit(1)
+print("dispatch check passed")

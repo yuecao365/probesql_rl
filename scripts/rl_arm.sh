@@ -145,7 +145,6 @@ mkdir -p logs ckpt/rl
 export LITELLM_LOCAL_MODEL_COST_MAP=True
 export PYTHONPATH=/root/probesql:${PYTHONPATH:-}
 export TAU2_DOMAIN=telecom TAU2_USER_LLM=deepseek/deepseek-chat TAU2_USER_TEMP=0.0
-export TAU2_W_DELTA=0.0
 export TAU2_W_HIT=$W_HIT        # failure-side partial credit; 0 reproduces arm 2
 [ -n "${BETA:-}" ] && export TAU2_BETA=$BETA   # unset for arm 2 and arm 3: scalar reward path
 export VLLM_USE_V1=1

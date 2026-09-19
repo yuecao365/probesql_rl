@@ -174,9 +174,6 @@ class Tau2AgentLoop(AgentLoopBase):
         self.user_llm_args = {"temperature": float(os.environ.get("TAU2_USER_TEMP", "0.0"))}
         self.max_steps = int(os.environ.get("TAU2_MAX_STEPS", "100"))
 
-        # w_delta = 0 is outcome-only training and is what arm 2 runs; raising it turns on the
-        # per-turn process reward. The two arms differ by this number alone.
-        self.w_delta = float(os.environ.get("TAU2_W_DELTA", "0.0"))
         # Partial credit for a failed episode, from the share of expected actions it did
         # reach. Zero reproduces arm 2's binary outcome reward.
         self.w_hit = float(os.environ.get("TAU2_W_HIT", "0.0"))

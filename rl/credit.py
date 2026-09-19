@@ -36,6 +36,23 @@ import torch
 logger = logging.getLogger(__file__)
 
 
+def _cfg(config, key: str, fallback):
+    """Read an algorithm setting off the config verl hands a registered estimator.
+
+    `compute_advantage` passes `norm_adv_by_std_in_grpo`, `gamma` and `lam` to its own GAE and
+    GRPO branches but builds `adv_kwargs` for a registered estimator from the batch alone, so
+    a custom estimator silently takes its own signature default. That is how arm 3 ran as
+    standard GRPO although `algorithm.norm_adv_by_std_in_grpo=False` was on the command line,
+    visible only as a max advantage of 2.44 against an un-normalised bound of 1.3.
+    """
+    if config is None:
+        return fallback
+    value = getattr(config, key, None)
+    if value is None and hasattr(config, "get"):
+        value = config.get(key, None)
+    return fallback if value is None else value
+
+
 def _norm_by_std(config, fallback: bool) -> bool:
     """Whether to divide the advantage by the group's standard deviation.
 
@@ -46,12 +63,7 @@ def _norm_by_std(config, fallback: bool) -> bool:
     line -- visible only as a max advantage of 2.44 where the un-normalised bound is 1.3.
     Reading it off `config` makes the flag mean what it says.
     """
-    if config is None:
-        return fallback
-    value = getattr(config, "norm_adv_by_std_in_grpo", None)
-    if value is None and hasattr(config, "get"):
-        value = config.get("norm_adv_by_std_in_grpo", None)
-    return fallback if value is None else bool(value)
+    return bool(_cfg(config, "norm_adv_by_std_in_grpo", fallback))
 
 
 def turn_spans(mask_row: torch.Tensor) -> list[tuple[int, int]]:
@@ -116,6 +128,7 @@ def compute_ca1_discounted_turn(
     the same task.
     """
     norm_adv_by_std_in_grpo = _norm_by_std(config, norm_adv_by_std_in_grpo)
+    gamma = float(_cfg(config, "gamma", gamma))
     spans, returns = _returns_per_turn(token_level_rewards, response_mask, gamma)
 
     pooled = defaultdict(list)
@@ -156,6 +169,7 @@ def compute_ca2_position_normalized(
     standard deviation over one sample is not a baseline.
     """
     norm_adv_by_std_in_grpo = _norm_by_std(config, norm_adv_by_std_in_grpo)
+    gamma = float(_cfg(config, "gamma", gamma))
     spans, returns = _returns_per_turn(token_level_rewards, response_mask, gamma)
 
     by_pos = defaultdict(list)
