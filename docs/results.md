@@ -507,3 +507,66 @@ It tracks `max|adv|` exactly and splits into two regimes: easy batches (reward ~
 turns) give 1.0-2.4, hard batches (reward 0.41-0.57, 21-26 turns) give 0.11-0.29. The same
 credit signal receives a gradient weight that differs 5-10x depending on how hard the batch
 happened to be, which is what dividing by the group standard deviation does.
+
+## arm 3dr — the shaped reward without the normalisation (auto-generated 2026-09-19 20:35)
+
+Same reward as arm 3, `norm_adv_by_std_in_grpo=False`, everything else identical. This
+separates "the shaped reward did this" from "dividing by the group std did this".
+
+```
+114 tasks shared by all arms, 4 rollouts each
+
+                p^1     p^2     p^3     p^4  all_fail   turns   calls   dups  errors
+arm1 SFT     75.9%  61.0%  50.2%  41.2%      2.6%    17.7     5.7   0.09    0.0%
+arm2b s15    84.0%  75.6%  70.0%  65.8%      3.5%    17.9     6.2   0.23    0.0%
+arm2b s25    83.6%  74.0%  67.3%  62.3%      2.6%    16.8     5.8   0.11    0.2%
+arm3  s15    80.7%  68.4%  59.6%  52.6%      1.8%    16.8     5.8   0.10    0.4%
+arm3  s25    86.4%  77.8%  71.5%  66.7%      1.8%    16.6     6.3   0.14    0.4%
+arm4  s15    81.4%  69.4%  61.0%  54.4%      1.8%    17.6     5.7   0.17    0.2%
+arm4  s25    82.0%  71.3%  64.0%  58.8%      2.6%    17.6     5.8   0.15    0.0%
+arm3dr s15   78.3%  65.8%  57.2%  50.9%      3.5%    17.8     6.0   0.10    0.9%
+arm3dr s25   86.2%  76.2%  68.2%  61.4%      0.9%    17.3     6.1   0.11    0.0%
+
+paired bootstrap on per-task pass^1, 10,000 resamples over tasks
+  arm2b s25 - arm1 SFT      +7.7%  95% CI [ +3.1%,+12.3%]  p=0.0014 * better/worse/tied 43/19/52
+  arm3  s25 - arm1 SFT     +10.5%  95% CI [ +5.5%,+15.6%]  p=0.0000 * better/worse/tied 49/21/44
+  arm4  s25 - arm1 SFT      +6.1%  95% CI [ +1.3%,+11.0%]  p=0.0168 * better/worse/tied 43/21/50
+  arm3  s15 - arm2b s15     -3.3%  95% CI [ -7.7%, +1.1%]  p=0.1548   better/worse/tied 18/31/65
+  arm3  s25 - arm2b s25     +2.9%  95% CI [ -1.5%, +7.2%]  p=0.2160   better/worse/tied 27/23/64
+  arm4  s15 - arm3  s15     +0.7%  95% CI [ -3.5%, +5.0%]  p=0.8046   better/worse/tied 29/29/56
+  arm4  s25 - arm3  s25     -4.4%  95% CI [ -9.2%, +0.2%]  p=0.0750   better/worse/tied 18/34/62
+  arm4  s15 - arm2b s15     -2.6%  95% CI [ -6.4%, +1.1%]  p=0.1892   better/worse/tied 21/29/64
+  arm4  s25 - arm2b s25     -1.5%  95% CI [ -5.9%, +2.9%]  p=0.5238   better/worse/tied 20/29/65
+  arm4  s25 - arm4  s15     +0.7%  95% CI [ -3.5%, +4.8%]  p=0.8026   better/worse/tied 26/24/64
+  arm3dr s15 - arm2b s15     -5.7%  95% CI [-10.3%, -1.3%]  p=0.0118 * better/worse/tied 19/38/57
+  arm3dr s25 - arm2b s25     +2.6%  95% CI [ -0.9%, +6.1%]  p=0.1744   better/worse/tied 25/19/70
+  arm3  s15 - arm3dr s15    +2.4%  95% CI [ -1.8%, +6.8%]  p=0.2718   better/worse/tied 30/25/59
+  arm3  s25 - arm3dr s25    +0.2%  95% CI [ -3.7%, +4.2%]  p=0.9538   better/worse/tied 28/25/61
+  arm3dr s25 - arm1 SFT     +10.3%  95% CI [ +5.9%,+14.9%]  p=0.0000 * better/worse/tied 42/12/60
+
+efficiency, paired over tasks both arms solved at least once, successful rollouts only
+  arm3dr s15 vs arm2b s15   (109 tasks)
+      turns             18.18 ->  18.03   -0.8%  95% CI [ -0.76, +0.45]  p=0.6280 
+      tool calls         6.33 ->   6.11   -3.4%  95% CI [ -0.42, -0.02]  p=0.0320*
+      duplicate calls    0.26 ->   0.16  -39.1%  95% CI [ -0.20, -0.01]  p=0.0340*
+  arm3dr s25 vs arm2b s25   (110 tasks)
+      turns             17.06 ->  17.53   +2.7%  95% CI [ -0.10, +1.03]  p=0.1026 
+      tool calls         5.89 ->   6.16   +4.7%  95% CI [ +0.10, +0.45]  p=0.0020*
+      duplicate calls    0.13 ->   0.12   -8.1%  95% CI [ -0.07, +0.05]  p=0.7372 
+  arm3  s15 vs arm2b s15   (110 tasks)
+      turns             18.30 ->  17.39   -5.0%  95% CI [ -1.57, -0.27]  p=0.0040*
+      tool calls         6.35 ->   6.01   -5.3%  95% CI [ -0.53, -0.14]  p=0.0004*
+      duplicate calls    0.26 ->   0.10  -61.8%  95% CI [ -0.25, -0.08]  p=0.0002*
+  arm3  s25 vs arm2b s25   (109 tasks)
+      turns             16.97 ->  16.55   -2.5%  95% CI [ -1.00, +0.14]  p=0.1468 
+      tool calls         5.88 ->   6.42   +9.1%  95% CI [ +0.35, +0.73]  p=0.0000*
+      duplicate calls    0.13 ->   0.19  +45.1%  95% CI [ -0.03, +0.16]  p=0.1930 
+  arm4  s15 vs arm3  s15   (111 tasks)
+      turns             17.34 ->  18.12   +4.5%  95% CI [ +0.23, +1.33]  p=0.0038*
+      tool calls         6.04 ->   5.91   -2.2%  95% CI [ -0.31, +0.05]  p=0.1460 
+      duplicate calls    0.11 ->   0.19  +76.2%  95% CI [ -0.00, +0.18]  p=0.0570 
+  arm4  s25 vs arm3  s25   (109 tasks)
+      turns             16.63 ->  17.99   +8.2%  95% CI [ +0.75, +2.02]  p=0.0000*
+      tool calls         6.40 ->   5.99   -6.3%  95% CI [ -0.58, -0.23]  p=0.0000*
+      duplicate calls    0.17 ->   0.18   +6.0%  95% CI [ -0.08, +0.10]  p=0.8268 
+```

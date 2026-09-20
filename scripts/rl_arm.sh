@@ -110,11 +110,15 @@ MODE=${2:-full}
 case "$ARM" in
   arm2)     ADV=grpo                    ; W_HIT=0.0 ; NORM=False ;;
   arm3)     ADV=grpo_efficiency         ; W_HIT=0.2 ; NORM=True  ;;
+  # The same shaped reward without the std normalisation arm 3 got by accident. It is what
+  # separates "the shaped reward did this" from "dividing by the group std did this", and the
+  # efficiency effect it is aimed at was already significant at fifteen steps.
+  arm3dr)   ADV=grpo_efficiency         ; W_HIT=0.2 ; NORM=False ;;
   arm4)     ADV=ca3_shaped_turn         ; W_HIT=0.2 ; NORM=True  ; BETA=0.35 ;;
   arm4null) ADV=ca3_shaped_turn         ; W_HIT=0.2 ; NORM=True  ; BETA=0.0  ;;
   arm4a)    ADV=ca1_discounted_turn     ; W_HIT=0.2 ; NORM=True  ;;
   arm4b)    ADV=ca2_position_normalized ; W_HIT=0.2 ; NORM=True  ;;
-  *) echo "unknown arm: $ARM (arm2|arm3|arm4|arm4null|arm4a|arm4b)"; exit 1 ;;
+  *) echo "unknown arm: $ARM (arm2|arm3|arm3dr|arm4|arm4null|arm4a|arm4b)"; exit 1 ;;
 esac
 VENV=/root/autodl-tmp/envs/verl
 # EXP can be set to an existing run to continue it: verl's resume_mode=auto finds the latest

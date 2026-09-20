@@ -23,7 +23,13 @@ ARMS = [
     ("arm3  s25", "outputs/eval_arm3_s25.json"),
     ("arm4  s15", "outputs/eval_arm4_s15.json"),
     ("arm4  s25", "outputs/eval_arm4_s25.json"),
+    ("arm3dr s15", "outputs/eval_arm3dr_s15.json"),
+    ("arm3dr s25", "outputs/eval_arm3dr_s25.json"),
 ]
+
+# An arm whose evaluation has not landed yet is dropped rather than crashing the report.
+import os as _os
+ARMS = [(n, p) for n, p in ARMS if _os.path.exists(f"{p}/results.json")]
 
 
 def load(path: str):
@@ -92,8 +98,13 @@ pairs = [("arm1 SFT", "arm2b s25"), ("arm1 SFT", "arm3  s25"), ("arm1 SFT", "arm
          ("arm2b s15", "arm3  s15"), ("arm2b s25", "arm3  s25"),
          ("arm3  s15", "arm4  s15"), ("arm3  s25", "arm4  s25"),
          ("arm2b s15", "arm4  s15"), ("arm2b s25", "arm4  s25"),
-         ("arm4  s15", "arm4  s25")]
-for a, b in pairs:
+         ("arm4  s15", "arm4  s25"),
+         # the clean single-variable test of the shaped reward, and the normalisation it
+         # was accidentally confounded with
+         ("arm2b s15", "arm3dr s15"), ("arm2b s25", "arm3dr s25"),
+         ("arm3dr s15", "arm3  s15"), ("arm3dr s25", "arm3  s25"),
+         ("arm1 SFT", "arm3dr s25")]
+for a, b in [(a, b) for a, b in pairs if a in data and b in data]:
     va = [pass_hat(data[a][t], 1) for t in tasks]
     vb = [pass_hat(data[b][t], 1) for t in tasks]
     pt, lo, hi, p = boot(va, vb)
@@ -104,8 +115,11 @@ for a, b in pairs:
           f"p={p:<7.4f}{star} better/worse/tied {win}/{loss}/{len(tasks)-win-loss}")
 
 print("\nefficiency, paired over tasks both arms solved at least once, successful rollouts only")
-for a, b in [("arm2b s15", "arm3  s15"), ("arm2b s25", "arm3  s25"),
-             ("arm3  s15", "arm4  s15"), ("arm3  s25", "arm4  s25")]:
+for a, b in [(a, b) for a, b in [
+        ("arm2b s15", "arm3dr s15"), ("arm2b s25", "arm3dr s25"),
+        ("arm2b s15", "arm3  s15"), ("arm2b s25", "arm3  s25"),
+        ("arm3  s15", "arm4  s15"), ("arm3  s25", "arm4  s25")]
+        if a in data and b in data]:
     both = [t for t in tasks
             if any(r["solved"] for r in data[a][t]) and any(r["solved"] for r in data[b][t])]
     print(f"  {b} vs {a}   ({len(both)} tasks)")

@@ -33,3 +33,6 @@ logs/
 # LoRA checkpoint mirrored onto the system disk so it survives a machine move
 # (the data disk does not follow an AutoDL image); 500 MB of optimizer state.
 ckpt_backup/
+
+# Job-application material: a public repo is not the place for a claim ledger
+resume/
