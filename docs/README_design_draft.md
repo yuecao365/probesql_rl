@@ -104,6 +104,6 @@ bash scripts/tau2_pilot.sh                            # prints the GO/NO-GO tabl
 
 ## Notes
 
-📐 [Agentic RL theory notes](https://yuecao365.github.io/probesql_rl/theory.html) — policy
+📐 [Agentic RL theory notes](https://yuecao365.github.io/tau2telecom_RL/theory.html) — policy
 gradient → GRPO/DAPO/Dr.GRPO → multi-turn masking and credit assignment → RLVR reward design →
 training infrastructure.

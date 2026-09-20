@@ -30,13 +30,14 @@ all k of k drawn rollouts pass.
 `Tool 'X' not found` — it calls the thirty tools that belong to the *customer's phone*, having
 only thirteen of its own. Diagnosing that first set the SFT target: teacher selection on
 pre-registered gates (Qwen3-14B: 65.8% protocol errors, 3.3% trajectory acceptance; DeepSeek:
-0.0%, 71.8% — scaling inside the same family does not fix the confusion), then rejection
-sampling 600 rollouts down to 269 examples. Protocol errors **62.4% → 0.3%**.
+0.0%, 71.8% — scaling inside the same family does not fix the confusion), then three rounds of
+sampling, rejection-filtered and deduplicated into 784 trajectories over 249 tasks — **698
+training, 86 held out by task**, loss on assistant spans only (11.6% of tokens). Protocol errors
+**62.4% → 0.3%**.
 
-The accepted teacher trajectories are published as
-[`cy-330/tau2-telecom-agent-sft`](https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft)
-— 784 trajectories over 249 tasks, split by task, with zero overlap against the frozen
-evaluation set.
+The trajectories are published as
+[`cy-330/tau2-telecom-agent-sft`](https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft),
+with zero overlap against the frozen evaluation set.
 
 **The stopping epoch was chosen on entropy, not loss.** Mean token entropy over assistant spans
 runs 0.414 / 0.376 / 0.357 across three epochs against the base model's 0.281 — still above

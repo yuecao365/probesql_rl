@@ -54,10 +54,33 @@ DeepSeek, chosen over Qwen3-14B on pre-registered gates measured at 15 tasks:
 Scale within the Qwen3 family does not fix the protocol confusion: the 14B calls the user's
 tools exactly as the 8B does, and 60 rollouts yielded two usable trajectories.
 
-Full run: 600 rollouts over 150 stratified tasks, 431 accepted (71.8%), **269 examples covering
-141 tasks**. Strict and lenient acceptance differ by one rollout. Encoded: zero dropped at 32k,
-median 9,611 tokens, 11.1% of tokens in the loss, 297,767 learned tokens total, and no tool
-response, scaffolding, think block or policy document in any learned span.
+First round: 600 rollouts over 150 stratified tasks, 431 accepted (71.8%), capped at two per
+task into **269 examples covering 141 tasks**. Strict and lenient acceptance differ by one
+rollout. Encoded: zero dropped at 32k, median 9,611 tokens, 11.1% of tokens in the loss,
+297,767 learned tokens total, and no tool response, scaffolding, think block or policy document
+in any learned span.
+
+**Correction (2026-09-20): 269 is the first round, not the training set.** Two more sampling
+rounds followed and the three were deduplicated into the file SFT v2 actually reads:
+
+```
+  teacher_v1     431  ┐
+  teacher_n150   267  ├─ three rounds, deduplicated
+  teacher_s1     437  ┘
+                  ↓
+  teacher_v2     784 trajectories over 249 tasks
+                  ↓   split by task_id, 10% held out
+             698 train + 86 validation
+```
+
+From the SFT v2 log: `held out 86 examples from 25 tasks; training on 698` and
+`698/784 examples within 32768 tokens; 781392/6737875 tokens in the loss (11.6%)`. Nothing was
+dropped for length. The paragraph above described the first round and was not updated when the
+later two landed, so **every earlier statement of "269 examples" understates the training set by
+roughly 2.6x**. The arm 1 numbers were always produced by the 698, so no result moves.
+
+The merged file is published as
+[`cy-330/tau2-telecom-agent-sft`](https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft).
 
 Stratification cannot fully repair the pool: it drains both scarce strata dry and still reaches
 only 8.5% escalate tasks and 12% `service_issue`, against the benchmark's 17.5% and 25%. There
