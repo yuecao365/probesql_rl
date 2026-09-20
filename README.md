@@ -33,6 +33,11 @@ pre-registered gates (Qwen3-14B: 65.8% protocol errors, 3.3% trajectory acceptan
 0.0%, 71.8% — scaling inside the same family does not fix the confusion), then rejection
 sampling 600 rollouts down to 269 examples. Protocol errors **62.4% → 0.3%**.
 
+The accepted teacher trajectories are published as
+[`cy-330/tau2-telecom-agent-sft`](https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft)
+— 784 trajectories over 249 tasks, split by task, with zero overlap against the frozen
+evaluation set.
+
 **The stopping epoch was chosen on entropy, not loss.** Mean token entropy over assistant spans
 runs 0.414 / 0.376 / 0.357 across three epochs against the base model's 0.281 — still above
 base at epoch 3, so the policy has spread left for GRPO to explore. Training loss cannot answer
@@ -118,6 +123,10 @@ scripts/build_sft.py    teacher sampling, rejection, stratification, loss-mask v
 docs/results.md         the full lab record, including what was wrong and when
 docs/eval_protocol.md   the frozen protocol
 ```
+
+Released alongside this repository:
+[`cy-330/tau2-telecom-agent-sft`](https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft)
+on Hugging Face — the teacher trajectories the SFT stage was built from.
 
 ## Scope
 
