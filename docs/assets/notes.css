@@ -267,3 +267,39 @@ td.num{font-family:'JetBrains Mono',monospace; font-variant-numeric:tabular-nums
 
 footer.site{border-top:2px solid var(--ink); padding:1.6rem 0 3rem; font-size:.82rem; color:var(--ink-3);}
 footer.site p{margin:0 0 .4rem;}
+
+/* ---------- 索引页：数据卡 / 图 / 实验日志 ---------- */
+.kpis{
+  display:grid; grid-template-columns:repeat(3,1fr); gap:1px;
+  background:var(--rule); border:1px solid var(--rule); margin:1.8rem 0 2rem;
+}
+.kpi{background:var(--ground); padding:.9rem 1rem;}
+.kpi .n{
+  font-family:'JetBrains Mono',monospace; font-size:1.35rem; font-weight:500;
+  color:var(--accent); font-variant-numeric:tabular-nums; line-height:1.2;
+}
+.kpi .l{font-size:.75rem; color:var(--ink-3); margin-top:.2rem;}
+
+figure.fig{margin:1.4rem 0 1.5rem;}
+figure.fig img{
+  display:block; width:100%; height:auto;
+  background:#FFFFFF; border:1px solid var(--rule); padding:.6rem;
+}
+figure.fig figcaption{font-size:.78rem; color:var(--ink-3); margin-top:.45rem;}
+
+.log{list-style:none; margin:1rem 0 0; padding:0; border-top:1px solid var(--rule);}
+.log li{
+  margin:0; padding:.7rem 0 .75rem; border-bottom:1px solid var(--rule-soft);
+  display:grid; grid-template-columns:5rem 1fr; gap:1rem;
+}
+.log .d{
+  font-family:'JetBrains Mono',monospace; font-size:.72rem;
+  color:var(--ink-3); padding-top:.2rem; white-space:nowrap;
+}
+.log .t{font-size:.89rem; color:var(--ink-2);}
+.log .t b{color:var(--ink);}
+
+@media (max-width:560px){
+  .kpis{grid-template-columns:1fr;}
+  .log li{grid-template-columns:1fr; gap:.15rem;}
+}

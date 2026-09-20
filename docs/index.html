@@ -3,32 +3,163 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Notes — text2sql_rl</title>
-<meta name="description" content="Agentic RL 学习笔记：理论推导、实现记录与踩坑总结。">
+<title>tau2telecom_RL — 双向控制工具 agent 的 post-training</title>
+<meta name="description" content="Qwen3-8B 在 τ²-bench telecom 上的 post-training 记录：SFT 冷启动、GRPO、shaped reward 与 turn-level credit assignment 的实测结果与实验日志。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;0,700;1,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="assets/notes.css?v=5">
+<link rel="stylesheet" href="assets/notes.css?v=6">
 </head>
 <body>
 
 <div class="topbar"><div class="inner">
-  <span class="here">Notes</span>
+  <span class="here">tau2telecom_RL</span>
   <span class="spacer"></span>
-  <a href="https://github.com/yuecao365/text2sql_rl">GitHub</a>
+  <a href="theory.html">理论笔记</a>
+  <a href="https://github.com/yuecao365/tau2telecom_RL">GitHub</a>
 </div></div>
 
 <div class="wrap">
 
 <header class="mast">
-  <div class="eyebrow">text2sql_rl</div>
-  <h1>Agentic RL 学习笔记</h1>
-  <p class="dek">围绕一个多轮执行反馈的 Text-to-SQL agent 训练项目整理的笔记。理论部分独立成篇、尽量通用；实现与踩坑部分随项目推进补充。</p>
+  <div class="eyebrow">τ²-bench telecom · Qwen3-8B · 单卡 A800</div>
+  <h1>双向控制工具 agent 的 post-training</h1>
+  <p class="dek">agent 读策略手册、调十三个后端 API 来诊断手机的连接故障，但任务期望的动作里 <strong>76% 必须由顾客本人完成</strong>，在一台 agent 碰不到的手机上——它只能把一个模拟用户讲明白。τ² 把这叫 dual control，也正是它让 turn-level credit assignment 在这里成为一个真问题：不同的轮次做的是不同的事。奖励全程序化，<code>R = Π(env_assertions)</code> 是一串确定性 Python 断言的乘积，全程没有 LLM judge。</p>
   <div class="meta">
     <span>Yue Cao</span>
-    <span>最后更新 2026-09</span>
+    <span>最后更新 2026-09-19</span>
   </div>
 </header>
+
+<div class="kpis">
+  <div class="kpi"><div class="n">86.4%</div><div class="l">最好一档 pass^1（基座 11.2%）</div></div>
+  <div class="kpi"><div class="n">+10.5</div><div class="l">RL 相对 SFT 的点数，p&lt;0.001</div></div>
+  <div class="kpi"><div class="n">0.3%</div><div class="l">协议错误，SFT 之前是 62.4%</div></div>
+</div>
+
+<section class="part" id="result">
+  <div class="part-head">
+    <div class="part-num">01</div>
+    <h2>结果</h2>
+    <p class="part-sub">114 个任务 × 4 次 rollout，协议在第一次跑之前就冻结</p>
+  </div>
+
+  <figure class="fig">
+    <img src="assets/ladder.png" alt="各阶段的 pass^1 与 pass^4">
+    <figcaption>每个阶段买到了什么。误差棒为任务级 bootstrap。</figcaption>
+  </figure>
+
+  <div class="tw"><table>
+    <thead><tr><th></th><th>pass^1</th><th>pass^4</th><th>协议错误</th><th>平均轮数</th></tr></thead>
+    <tbody>
+      <tr><td>Qwen3-8B 基座</td><td class="num">11.2%</td><td class="num">0.0%</td><td class="num">62.4%</td><td class="num">22.9</td></tr>
+      <tr><td>+ SFT</td><td class="num">75.9%</td><td class="num">41.2%</td><td class="num">0.3%</td><td class="num">17.7</td></tr>
+      <tr><td>+ GRPO</td><td class="num">83.6%</td><td class="num">62.3%</td><td class="num">0.2%</td><td class="num">16.8</td></tr>
+      <tr><td><strong>+ shaped reward</strong></td><td class="num"><strong>86.4%</strong></td><td class="num"><strong>66.7%</strong></td><td class="num">0.4%</td><td class="num">16.6</td></tr>
+      <tr><td>+ turn-level credit</td><td class="num">82.0%</td><td class="num">58.8%</td><td class="num">0.0%</td><td class="num">17.6</td></tr>
+    </tbody>
+  </table></div>
+
+  <p><code>pass^k</code> 是 τ² 自己的指标：抽 k 次全部通过的概率。协议见
+  <a href="https://github.com/yuecao365/tau2telecom_RL/blob/main/docs/eval_protocol.md">docs/eval_protocol.md</a>，
+  写在第一次跑之前，之后没有因为看到结果而调过。</p>
+</section>
+
+<section class="part" id="stages">
+  <div class="part-head">
+    <div class="part-num">02</div>
+    <h2>每个阶段实际买到了什么</h2>
+    <p class="part-sub">冷启动、停止轮次，以及唯一让 RL 动起来的那个改动</p>
+  </div>
+
+  <h3>SFT 买到的是动作空间，不是推理</h3>
+  <p>基座模型 62.4% 的工具返回是 <code>Tool 'X' not found</code>：它在调属于<em>顾客手机</em>的那三十个工具，而自己只有十三个。先诊断出这一点，才定下 SFT 的目标——教师按预注册的门槛筛选（Qwen3-14B：65.8% 协议错误、3.3% 轨迹接受率；DeepSeek：0.0%、71.8%，在同一个家族里放大规模并不能解决这种混淆），三轮采样、拒绝过滤加去重，得到 <strong>784 条轨迹、249 个任务</strong>，其中 698 条训练、86 条按任务留出，loss 只落在 assistant span（11.6% 的 token）。协议错误 <strong>62.4% → 0.3%</strong>。</p>
+  <p>这批教师轨迹已发布为
+  <a href="https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft"><code>cy-330/tau2-telecom-agent-sft</code></a>，
+  与冻结的评测集零重叠。</p>
+
+  <h3>停在第几个 epoch 是用熵决定的，不是 loss</h3>
+  <p>assistant span 上的平均 token 熵，三个 epoch 依次是 0.414 / 0.376 / 0.357，基座是 0.281——第三个 epoch 仍高于基座，说明策略还留着给 GRPO 探索的余地。训练 loss 回答不了这个问题：在一个输出分布已经退化的模型里，它照样一直降。</p>
+
+  <h3>让 RL 动起来的改动只有一个：学习率</h3>
+  <div class="box key"><div class="lbl">量出来的，不是调出来的</div>
+  <p>veRL 全参数 PPO 的默认值 1e-6 作用在 rank-16 的 LoRA adapter 上，合并后权重最多移动 <strong>9.3e-07</strong>；同一个 adapter 在 SFT 的 1e-4 下移动 <strong>3.5e-03</strong>，相差四千倍。改到 2e-5 之后，同一份配置从「+3.3 点、区间跨零」变成 <strong>+8.1 点，p=0.0012</strong>。</p></div>
+  <p>RL 相对 SFT checkpoint 是 <strong>+7.7 到 +10.5 点</strong>（任务级配对 bootstrap，p&lt;0.005），<code>pass^4</code> 41.2% → 66.7%。它买到的是稳定性，不是单次能力。</p>
+</section>
+
+<section class="part" id="reward">
+  <div class="part-head">
+    <div class="part-num">03</div>
+    <h2>两种奖励设计，只有一种成立</h2>
+    <p class="part-sub">一个从轨迹里挖出来，一个被自己的实验证伪</p>
+  </div>
+
+  <figure class="fig">
+    <img src="assets/efficiency.png" alt="各 arm 的轨迹效率对比">
+    <figcaption>同等 pass^1 下，shaped reward 让成功轨迹更短、重复调用更少。</figcaption>
+  </figure>
+
+  <h3>shaped reward — 形式由两个测量决定</h3>
+  <p>每一条成功轨迹都命中了 100% 的期望动作，所以 action hit 在<em>成功之间</em>不携带信息；而 65.8% 的任务四次 rollout 全部成功，在那里 group-relative 的 advantage 恒为零。于是两项被构造成不相交的：<code>0.2·(1−R)·hit</code> 把失败彼此区分开，<code>0.3·R·eff</code> 在各自 group 内按速度给成功排序。先试过绝对形式 <code>min(1, 15/T)</code>，它在全通过 group 里的平均绝对 advantage 是 0.012，而混合 group 是 0.25–0.50，会被直接淹掉；换成组内归一化后回到 0.105。</p>
+  <p>十五步时，<strong>在 pass^1 相同的前提下，成功轨迹短 5.0%、重复工具调用少 61.8%</strong>（110 个任务配对，p&lt;0.001）。</p>
+
+  <h3>turn-level credit — 设计、实现，然后被证伪</h3>
+  <p>奖励该放在轨迹的哪个位置，是离线回放 430 条轨迹决定的：期望动作完成的相对位置中位数是 0.54，轨迹的第一个十分位里 <strong>1953 次只有 1 次命中</strong>，落在最后一轮的只有 4.4%。把终局奖励往回折扣因此是错的方向，所以 credit 改成局部向前传播。设计守住两个恒等式——奖励行和与 baseline 逐字节相同，<code>β=0</code> 逐比特复现 baseline——由性质测试钉住，并在每个训练步重新检查（25 步内漂移 &lt; 1.4e-07）。这让它成为整个项目里唯一真正单变量的对比。</p>
+  <div class="box warn"><div class="lbl">负结果，以及它的机制</div>
+  <p>pass^1 没有提升，轨迹反而长了 8.2%（p&lt;0.0001）。分解之后原因清楚：<strong>多出来的每一轮都是在和顾客说话</strong>（+11.3%，p&lt;0.0001），后端工具轮次完全没动（+1.0%，p=0.54）。dual control 把 76% 的期望动作放在用户消息里，而那些 token 不带梯度，于是 credit 被回溯到<em>提出要求</em>的那个 assistant 轮次——一个消息轮次。策略泛化出了错误的不变量：不是「在这里说这句」，而是「多产出面向顾客的轮次」。</p>
+  <p>训练奖励没有上升（0.620 对 baseline 的 0.624），排除了 reward hacking。目标函数从未被钻空子，是<strong>归因规则</strong>把梯度放错了地方。</p></div>
+</section>
+
+<section class="part" id="where">
+  <div class="part-head">
+    <div class="part-num">04</div>
+    <h2>增益落在了哪里</h2>
+    <p class="part-sub">训练池和评测集对「telecom 是什么」的看法差得很远</p>
+  </div>
+
+  <figure class="fig">
+    <img src="assets/coverage.png" alt="训练池与评测集的任务类型分布">
+    <figcaption>RL 训练池与冻结评测集的 issue 分布对比。</figcaption>
+  </figure>
+
+  <p>RL 池（<code>full ∖ base</code>，2171 个任务）里 <code>mms_issue</code> 占 89.1%，在评测集里只占 43.0%；<code>service_issue</code> 在池里<strong>只占 0.8%</strong>（总共 18 个任务），在评测集里却占 25.4%。按 issue 切开看结果：mms <strong>+15.8 点，p&lt;0.001</strong>；mobile_data +4.2，p=0.30（SFT 之后已经饱和在 90.3%）；service +9.5，p=0.15。</p>
+</section>
+
+<section class="part" id="honest">
+  <div class="part-head">
+    <div class="part-num">05</div>
+    <h2>数字是怎么保证可信的</h2>
+    <p class="part-sub">先定噪声地板，再谈结论</p>
+  </div>
+  <ul>
+    <li><strong>冻结协议。</strong>写在第一次跑之前，看到结果之后没有再改过。</li>
+    <li><strong>量出来的噪声地板。</strong><em>同一次</em>训练的第 10 步和第 15 步两个快照，在同样的 114 个任务上差 ±2.5 点。比这更小的差异不能当作结论。</li>
+    <li><strong>按任务配对 bootstrap</strong>（10,000 次重采样），而不是按 rollout：同一个故障的四次 rollout 共享一个解法，当成四个样本会让每个区间窄掉约一半。<code>scripts/rl_stats.py</code> 从保存的运行重算这里的每一个数。</li>
+    <li>有<strong>两个结论</strong>在被这套机制推翻之后作废，还有<strong>三处配置</strong>被发现能正常解析却从未被消费——其中一处让 baseline 和实验组多差了一个没人写下来的变量。</li>
+  </ul>
+</section>
+
+<section class="part" id="log">
+  <div class="part-head">
+    <div class="part-num">06</div>
+    <h2>实验日志</h2>
+    <p class="part-sub">完整实验室记录（含错在哪、什么时候发现）在 <a href="https://github.com/yuecao365/tau2telecom_RL/blob/main/docs/results.md">docs/results.md</a></p>
+  </div>
+
+  <ul class="log">
+    <li><span class="d">09-16</span><span class="t"><b>arm 0 — 零样本基线。</b>全部 114 个任务：pass^1 11.2%，而 62.4% 的工具返回是「工具不存在」——基座在调顾客手机上的工具。计划因此按测量结果重写。</span></li>
+    <li><span class="d">09-16</span><span class="t"><b>教师采样。</b>Qwen3-14B 65.8% 协议错误、3.3% 接受率；DeepSeek 0.0%、71.8%。同家族放大规模不解决协议混淆，教师因此换人。</span></li>
+    <li><span class="d">09-16</span><span class="t"><b>用户模拟器属于环境的一部分。</b>已发表的消融显示换掉它能让分数动二十个点，所以任何 τ² telecom 数字都必须连同它一起报。</span></li>
+    <li><span class="d">09-17</span><span class="t"><b>arm 1 — SFT 冷启动。</b>pass^1 75.9%，协议错误降到 0.3%。停止轮次按熵选（0.414 / 0.376 / 0.357，基座 0.281），不按 loss。</span></li>
+    <li><span class="d">09-17</span><span class="t"><b>训练池比假设的更粗。</b>45% 的任务只有一条断言，per-turn 过程奖励在那里与终局奖励完全等价——设计稿里的这一项就此作废。</span></li>
+    <li><span class="d">09-17</span><span class="t"><b>arm 2 — GRPO 十步。</b>+3.3 点，区间跨零。曲线此时什么都说明不了，先去查为什么。</span></li>
+    <li><span class="d">09-18</span><span class="t"><b>三个恒为零的指标</b>，以及<b>小了四千倍的学习率</b>：1e-6 作用在 LoRA 上，合并权重位移只有 9.3e-07。改成 2e-5 后变成 +8.1 点，p=0.0012。</span></li>
+    <li><span class="d">09-18</span><span class="t"><b>arm 2b / arm 3 — 15 与 25 步。</b>GRPO 对 SFT +7.7 点；shaped reward +10.5 点，且在同等 pass^1 下轨迹更短、重复调用少 61.8%。</span></li>
+    <li><span class="d">09-19</span><span class="t"><b>更正：arm 3 并不是 Dr.GRPO。</b>那个 flag 从未到达任何已注册的 estimator，之前基于它的表述作废。</span></li>
+    <li><span class="d">09-19</span><span class="t"><b>arm 4 — turn-level credit，实测。</b>pass^1 没升，轨迹长 8.2%，而多出来的轮次全部是面向顾客的消息轮次，后端工具轮次纹丝不动。训练奖励没涨，排除 reward hacking：错的是归因规则。</span></li>
+    <li><span class="d">09-19</span><span class="t"><b>arm 3dr — 去掉组内标准差归一化。</b>25 步 86.2%，对 arm 3 的 86.4% 差 +0.2 点、p=0.95。增益来自 shaped reward 本身，不是那次除法。</span></li>
+  </ul>
+</section>
 
 <div class="cards">
   <a class="card" href="theory.html">
@@ -36,20 +167,26 @@
     <h3>Agentic RL 理论笔记</h3>
     <p>从策略梯度的 baseline 定理，推到 PPO 的 clip、GRPO 的 group baseline、DAPO 与 Dr. GRPO 的修正，再到多轮场景的 observation masking、credit assignment、RLVR 奖励设计与训练基础设施。</p>
   </a>
-  <div class="card soon">
-    <div class="card-k">Implementation · 待补</div>
-    <h3>环境与奖励的实现</h3>
-    <p>SQLite 沙箱工具环境、多轮驱动循环、快速验证器与官方评测套件的一致性校验。</p>
-  </div>
-  <div class="card soon">
-    <div class="card-k">Engineering · 待补</div>
-    <h3>消费级硬件上的训练记录</h3>
-    <p>显存预算、mask 验证、异常轨迹监控，以及训练不收敛时的排查顺序。</p>
-  </div>
+  <a class="card" href="https://github.com/yuecao365/tau2telecom_RL/blob/main/docs/results.md">
+    <div class="card-k">Lab record</div>
+    <h3>完整实验记录</h3>
+    <p>arm 0 到 arm 4 的每一次运行、每一张表、每一处更正，按日期排列，包括被推翻的结论和它们是怎么被推翻的。</p>
+  </a>
+  <a class="card" href="https://github.com/yuecao365/tau2telecom_RL/blob/main/docs/eval_protocol.md">
+    <div class="card-k">Protocol</div>
+    <h3>冻结的评测协议</h3>
+    <p>114 个任务、4 次 rollout、按任务类型切分，用户模拟器与温度写死；以及为什么统计要按任务而不是按 rollout 配对。</p>
+  </a>
+  <a class="card" href="https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft">
+    <div class="card-k">Dataset</div>
+    <h3>cy-330/tau2-telecom-agent-sft</h3>
+    <p>SFT 阶段用的教师轨迹，784 条、249 个任务，与冻结评测集零重叠，已发布在 Hugging Face。</p>
+  </a>
 </div>
 
 <footer class="site">
-  <p>源码与笔记均在 <a href="https://github.com/yuecao365/text2sql_rl">github.com/yuecao365/text2sql_rl</a>。</p>
+  <p>源码、实验记录与笔记均在 <a href="https://github.com/yuecao365/tau2telecom_RL">github.com/yuecao365/tau2telecom_RL</a>。</p>
+  <p>范围：单 GPU、单 seed、25 步 × 64 条轨迹的 on-policy RL，可验证奖励，无 reward model、无偏好优化、无 critic。</p>
 </footer>
 
 </div>

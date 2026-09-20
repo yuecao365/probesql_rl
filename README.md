@@ -129,6 +129,9 @@ Released alongside this repository:
 [`cy-330/tau2-telecom-agent-sft`](https://huggingface.co/datasets/cy-330/tau2-telecom-agent-sft)
 on Hugging Face — the teacher trajectories the SFT stage was built from.
 
+The same results, the lab log and a set of Agentic RL theory notes (in Chinese) are on the
+project page: [yuecao365.github.io/tau2telecom_RL](https://yuecao365.github.io/tau2telecom_RL/).
+
 ## Scope
 
 On-policy RL with a verifiable reward, one GPU, single seed, 25 steps × 64 trajectories. No
